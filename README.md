@@ -24,4 +24,3 @@ Documentation:
 - [docs/adr/](docs/adr/): decision records
 - [docs/RISKS.md](docs/RISKS.md): what may bite later
 - [docs/AMBIGUOUS-CHOICES.md](docs/AMBIGUOUS-CHOICES.md): judgement calls, including ones made during implementation that still need review
-- [docs/design-session-transcript.md](docs/design-session-transcript.md): the full design interview and build session, verbatim
