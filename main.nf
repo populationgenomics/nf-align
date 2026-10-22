@@ -158,6 +158,9 @@ workflow {
         registered = REGISTER_ANALYSIS(
             ALIGN.out.cram.map { meta, _cram, _crai -> [meta, uriOf(workflow.outputDir.resolve(cramPath(meta)))] },
             metamistProject(),
+            params.sequencing_type,
+            params.arGuid,
+            params.register_wait_minutes.toInteger(),
         )
     }
 

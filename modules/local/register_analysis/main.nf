@@ -6,12 +6,15 @@ process REGISTER_ANALYSIS {
     input:
     tuple val(meta), val(cram_uri)
     val project
+    val sequencing_type
+    val ar_guid
+    val wait_minutes // how long to wait for the CRAM and index to be published
 
     output:
     val meta
 
     script:
-    def attempts = params.register_wait_minutes.toInteger() * 6
+    def attempts = wait_minutes * 6
     """
     # workflow outputs are published asynchronously, so the CRAM and index may not be in GCS yet
     for i in \$(seq ${attempts}); do
@@ -27,13 +30,13 @@ process REGISTER_ANALYSIS {
         --type cram \\
         --secondary index=${cram_uri}.crai \\
         --sgs ${meta.id} \\
-        --meta sequencing_type=${params.sequencing_type} ar-guid=${params.arGuid}
+        --meta sequencing_type=${sequencing_type} ar-guid=${ar_guid}
     """
 
     stub:
     """
     echo python3 -m cpg_utils.metamist_registration --dry --project ${project} --output ${cram_uri} \\
         --type cram --secondary index=${cram_uri}.crai --sgs ${meta.id} \\
-        --meta sequencing_type=${params.sequencing_type} ar-guid=${params.arGuid}
+        --meta sequencing_type=${sequencing_type} ar-guid=${ar_guid}
     """
 }
