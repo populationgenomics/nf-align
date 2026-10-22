@@ -2,13 +2,13 @@
 
 Alignment repository built in NextFlow.
 
-Takes Metamist cohorts and produces a deduplicated, coordinate-sorted CRAM 3.0 for each short-read
-sequencing group, whether its input is FASTQ, FASTQ.ora, BAM or CRAM. It aligns with bwa-mem3, marks
+Takes Metamist cohorts (or a list of sequencing group IDs) and produces a deduplicated, coordinate-sorted
+CRAM 3.0 for each short-read sequencing group, whether its input is FASTQ, FASTQ.ora, BAM or CRAM. It aligns with bwa-mem3, marks
 duplicates with dupblaster, publishes into the dataset bucket (`cram/<SG>.cram`, or
 `exome/cram/<SG>.cram`), and registers each CRAM in Metamist. It runs on Google Batch.
 
 ```bash
-nextflow run main.nf -profile gcb \
+nextflow run main.nf \
     --dataset <dataset> --sequencing_type genome --arGuid <guid> --cohorts COH1,COH2 \
     --bwa_index_prefix <index prefix> --align_container <image> --cpg_container <image>
 

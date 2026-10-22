@@ -60,7 +60,7 @@ _Avoid_: run ID
 ### Inputs
 
 **Sample sheet**:
-The run's work list: one row per alignment unit. It's built from cohorts, or supplied directly.
+The run's work list: one row per alignment unit. It's built from cohorts or SG IDs, or supplied directly.
 _Avoid_: manifest, input sheet
 
 **Kind**:

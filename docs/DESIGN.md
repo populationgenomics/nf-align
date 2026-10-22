@@ -1,6 +1,6 @@
 # nf-align: design brief
 
-Aligns the short-read sequencing groups of a set of Metamist cohorts. The output for each is a
+Aligns the short-read sequencing groups of a set of Metamist cohorts, or a list of sequencing groups. The output for each is a
 deduplicated, coordinate-sorted CRAM. It's a Nextflow (≥ 25.10, strict syntax) pipeline that runs on Google
 Batch against data in GCS, and it can be tested offline with stub runs.
 
@@ -24,7 +24,7 @@ One run covers **one dataset and one sequencing type** ([ADR 0001](adr/0001-one-
 | `sequencing_type` | `genome` or `exome` |
 | `accessLevel` | `full` / `standard` (equivalent), or `test`. Selects the Metamist project (`<dataset>` or `<dataset>-test`) and the default bucket (`gs://cpg-<dataset>-main` or `-test`) |
 | `arGuid` | the analysis-runner GUID, used in resource labels, the per-run record directory and the registered analyses. Mandatory |
-| `cohorts` **or** `samplesheet` | exactly one: Metamist cohort IDs, or a prepared sheet that skips the Metamist step |
+| `cohorts` **or** `sgids` **or** `samplesheet` | exactly one: Metamist cohort IDs, Metamist SG IDs (queried directly), or a prepared sheet that skips the Metamist step |
 | `bwa_index_prefix`, `ref_fasta` | the alignment reference and its bwa-mem3 index ([ADR 0006](adr/0006-dragen-masked-reference-alt-unaware.md)) |
 | `align_container`, `cpg_container` | null until the images are built; the `gcb` profile refuses to run without them |
 
@@ -34,7 +34,7 @@ the config never sets them.
 ## Flow
 
 ```
---cohorts ─ BUILD_SAMPLESHEET ─┐                    (or --samplesheet)
+--cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐          (or --samplesheet)
                                ▼
                          sample sheet ─ parse ─┬─ aligned ───────────────────────────────▶ (all_crams, for genotyping)
                                                └─ to align ─ pre-flight ─ ALIGN ─┬─ publish CRAM, .crai, metrics
@@ -44,12 +44,15 @@ the config never sets them.
 
 ### 1. Sample sheet (`BUILD_SAMPLESHEET`, `bin/build_samplesheet.py`)
 
-- One GraphQL query, scoped to `project(name: <dataset>[-test])`. It fetches cohort status, SGs, assay
-  meta, and completed, active `cram` analyses.
+- One GraphQL query, scoped to `project(name: <dataset>[-test])`. It fetches cohort status and the
+  cohorts' SGs (`--cohorts`), or the named SGs directly (`--sgids`), with assay meta and completed, active
+  `cram` analyses.
 - Cohorts that are missing from the project, inactive or empty fail the run. So does an SG from another
   project. Every offender is reported in one error.
-- SGs are de-duplicated across cohorts. SGs that aren't short-read, or aren't `sequencing_type`, are
-  skipped with a warning.
+- `--cohorts`: SGs are de-duplicated across cohorts. SGs that aren't short-read, or aren't
+  `sequencing_type`, are skipped with a warning.
+- `--sgids`: each SG was asked for by name, so one that's missing from the project, or isn't short-read
+  `sequencing_type`, fails the run instead of being skipped.
 - Read locations are used **exactly as Metamist stores them**.
 - Each SG gets one row per alignment unit, with a `kind` (glossary): `fastq` and `fastq_ora` (one row
   per lane), `cram` or `bam` (one row), or `aligned` (it already has a CRAM analysis; one row pointing at
@@ -155,7 +158,7 @@ nextflow_schema.json          launch-form schema (main.nf does its own validatio
 conf/base.config              containers, resources, error strategy, resource labels
 subworkflows/local/align/     ALIGN
 modules/local/<process>/      build_samplesheet, sort_index, align_to_cram, align_shard, merge_to_cram, register_analysis
-bin/build_samplesheet.py      cohorts -> sample sheet (needs only `metamist`)
+bin/build_samplesheet.py      cohorts or SG IDs -> sample sheet (needs only `metamist`)
 bin/align_stream.sh           per-kind input -> bwa-mem3 BAM stream
 bin/dedup_to_cram.sh          dupblaster -> sort -> CRAM 3.0 + metrics
 bin/threads.sh                CPU split between the tools in a pipe
@@ -193,7 +196,7 @@ verbatim to the dupblaster command, so quote it as you would for bash:
 ## Status and next steps
 
 **Done:** everything above. `nextflow lint` is clean, and 24 tests pass, covering every input kind,
-exome layout, registration paths, injected failures, the pre-flight clash, -resume, cohorts mode and
+exome layout, registration paths, injected failures, the pre-flight clash, -resume, cohorts and SG ID modes and
 parameter validation.
 
 **Not done yet:**

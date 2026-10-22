@@ -59,7 +59,9 @@ Part B was decided during implementation and **has not been explicitly confirmed
 14. **`dupblaster_extra_args` is one string, inserted verbatim into the dupblaster command line.** Bash
     splits and unquotes it, so it can hold several arguments, but quoting is the caller's job. A bare
     `--dupblaster_extra_args` (which arrives as `'true'`) fails parameter validation.
-15. **`cohorts` takes commas or spaces** (`COH1,COH2`), or a list from config.
+15. **`cohorts` and `sgids` take commas or spaces** (`COH1,COH2`), or a list from config.
+    - **`sgids` fails on an SG that isn't short-read `sequencing_type`**, where cohorts mode skips it with a
+      warning. A named SG is an explicit request, so a silent skip would leave it unaligned unnoticed.
 16. **Stubs:** `BUILD_SAMPLESHEET`'s stub writes a sheet with only a header (nothing to align), and
     `REGISTER_ANALYSIS`'s stub echoes the `--dry` command it would have run.
 17. **`SORT_INDEX` stages the input reference under `in/`**, next to the reads. This avoids a name

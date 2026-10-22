@@ -14,7 +14,7 @@ def touch(path: Path) -> str:
 
 
 def sg(sg_id: str, assays: list[dict] | None = None, analyses: list[dict] | None = None, **fields: object) -> dict:
-    """A sequencing group, shaped like the COHORTS_QUERY response."""
+    """A sequencing group, shaped like the SgFields fragment of the sample sheet queries."""
     return {
         'id': sg_id,
         'type': 'genome',

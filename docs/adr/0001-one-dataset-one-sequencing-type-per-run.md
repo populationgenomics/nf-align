@@ -3,7 +3,7 @@
 A run takes `params.dataset` and `params.sequencing_type`. Its Metamist query is scoped to that dataset's
 project, and `outputDir` is the dataset bucket, so the output block can use cpg-flow's fixed relative
 layout (`cram/`, `exome/cram/`, `qc/...`). An SG from another project fails the sample sheet step, and
-SGs of the other sequencing type are skipped. A cohort that spans datasets or sequencing types needs one
+SGs of the other sequencing type are skipped (or, when named with `--sgids`, fail it). A cohort that spans datasets or sequencing types needs one
 run per (dataset, type).
 
 ## Considered Options

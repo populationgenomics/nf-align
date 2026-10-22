@@ -1,5 +1,5 @@
 /*
- * Alignment of one dataset and sequencing type: Metamist cohorts -> sample sheet -> bwa-mem3 + dupblaster
+ * Alignment of one dataset and sequencing type: Metamist cohorts or SGs -> sample sheet -> bwa-mem3 + dupblaster
  * -> CRAM, published with workflow outputs and registered in Metamist. See DESIGN.md.
  */
 
@@ -37,8 +37,9 @@ def uriOf(path) {
     path.scheme == 'file' ? path.toString() : path.toUriString()
 }
 
-def cohortList() {
-    params.cohorts instanceof List ? params.cohorts : params.cohorts.toString().tokenize(', ')
+// a list from config, or a comma/space separated string from the command line
+def idList(param) {
+    (param instanceof List) ? param : param.toString().tokenize(', ')
 }
 
 def validateParams() {
@@ -56,11 +57,11 @@ def validateParams() {
     if (!(params.dupblaster_extra_args instanceof CharSequence) || params.dupblaster_extra_args.toString() == 'true') {
         error("--dupblaster_extra_args must be a string of dupblaster arguments, got '${params.dupblaster_extra_args}'")
     }
-    if (!params.cohorts == !params.samplesheet) {
-        error('Provide exactly one of --cohorts (to query Metamist) or --samplesheet')
+    if ([params.cohorts, params.sgids, params.samplesheet].count { input -> input } != 1) {
+        error('Provide exactly one of --cohorts, --sgids or --samplesheet')
     }
-    if (workflow.profile.tokenize(',').contains('gcb') && !(params.align_container && params.cpg_container)) {
-        error('The gcb profile needs --align_container and --cpg_container')
+    if (!(params.align_container && params.cpg_container)) {
+        error('The workflow needs --align_container and --cpg_container')
     }
 }
 
@@ -118,15 +119,18 @@ workflow {
     def index_name = file(params.bwa_index_prefix).name
     def bwa_index = channel.value([index_name, ['bwt.2bit.64', 'amb', 'ann', 'pac'].collect { ext -> file("${params.bwa_index_prefix}.${ext}") }])
 
-    // there are two entrypoints: --cohorts and --samplesheet. If a samplesheet is given as input, it shouldn't
-    // be written to the output folder. built_sheet vs. sheet differentiates the two cases
+    // there are three entrypoints: --cohorts, --sgids and --samplesheet. If a samplesheet is given as input, it
+    // shouldn't be written to the output folder. built_sheet vs. sheet differentiates the two cases
     def built_sheet = channel.empty()
     def sheet = channel.empty()
     if (params.samplesheet) {
         sheet = channel.fromPath(params.samplesheet, checkIfExists: true)
     }
     else {
-        built_sheet = BUILD_SAMPLESHEET(metamistProject(), params.sequencing_type, cohortList())
+        // one of the two is empty: SGs are discovered through cohorts, or queried directly
+        def cohorts = params.cohorts ? idList(params.cohorts) : []
+        def sgids = params.sgids ? idList(params.sgids) : []
+        built_sheet = BUILD_SAMPLESHEET(metamistProject(), params.sequencing_type, cohorts, sgids)
         sheet = built_sheet
     }
 

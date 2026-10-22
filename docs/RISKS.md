@@ -39,15 +39,15 @@ documentation.
 
 ## Re-running after a partial failure
 
-11. **Cohorts mode recovers by itself; `--samplesheet` mode doesn't.** After a run where some SGs failed:
-    - **Cohorts mode:** the successful SGs now have CRAM analyses, so they come back as `aligned`, and
+11. **Cohorts and SG ID modes recover by themselves; `--samplesheet` mode doesn't.** After a run where some SGs failed:
+    - **Cohorts / SG ID mode:** the successful SGs now have CRAM analyses, so they come back as `aligned`, and
       only the failures are aligned again.
     - **`--samplesheet` mode:** the successful SGs' CRAMs now exist, so the pre-flight check fails the
-      rerun. Remove those rows first, or rebuild the sheet from cohorts.
+      rerun. Remove those rows first, or rebuild the sheet from cohorts or SG IDs.
     - **Registration failures:** if registration failed, the CRAM exists but isn't registered, so either
       mode trips the pre-flight check until it's registered by hand.
     - **`-resume`** works in both modes: outputs claimed by the session's earlier attempt are allowed to
-      exist (ADR 0002). In cohorts mode the cached sample sheet is reused, so SGs registered by the
+      exist (ADR 0002). In cohorts and SG ID modes the cached sample sheet is reused, so SGs registered by the
       earlier attempt are republished from cache and not registered again. The claims file lives in the
       work dir, so cleaning the work dir (or resuming from a different one) brings the check back.
 

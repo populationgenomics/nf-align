@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from build_samplesheet import build_rows, write_sheet
-from conftest import PROJECT, cohort, touch
+from conftest import PROJECT, touch
 
 pytestmark = pytest.mark.skipif(shutil.which('nextflow') is None, reason='nextflow not installed')
 
@@ -27,7 +27,7 @@ def read_tsv(path: Path, sep: str = '\t') -> list[dict]:
 def run(tmp_path, cohort_sgs):
     """Run main.nf in stub mode over a sheet with one SG per input kind; returns (result, outputDir, trace rows)."""
     sheet = tmp_path / 'sheet.tsv'
-    write_sheet(build_rows([cohort('COH1', cohort_sgs)], PROJECT, 'genome'), str(sheet))
+    write_sheet(build_rows(cohort_sgs, PROJECT, 'genome'), str(sheet))
     refs = tmp_path / 'refs'
     for name in ['ref.fasta', 'ref.fasta.fai', *(f'ref.fasta.{ext}' for ext in ['bwt.2bit.64', 'amb', 'ann', 'pac'])]:
         touch(refs / name)
@@ -166,12 +166,20 @@ def test_cohorts_mode_publishes_the_built_sheet(run):
     assert (out / RUN_DIR / 'samplesheet.tsv').exists()
 
 
+def test_sgids_mode_publishes_the_built_sheet(run):
+    result, out, tasks = run(inputs=('--sgids', 'CPG1,CPG2'))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert task_names(tasks, 'BUILD_SAMPLESHEET') == {'ds'}
+    assert (out / RUN_DIR / 'samplesheet.tsv').exists()
+
+
 @pytest.mark.parametrize(
     ('args', 'message'),
     [
         (('--sequencing_type', 'wgs'), "--sequencing_type must be genome or exome, got 'wgs'"),
         (('--accessLevel', 'prod'), "--accessLevel must be full, standard or test, got 'prod'"),
-        (('--cohorts', 'COH1'), 'Provide exactly one of --cohorts'),
+        (('--cohorts', 'COH1'), 'Provide exactly one of --cohorts, --sgids or --samplesheet'),
+        (('--sgids', 'CPG1'), 'Provide exactly one of --cohorts, --sgids or --samplesheet'),
         (('--dupblaster_extra_args',), '--dupblaster_extra_args must be a string of dupblaster arguments'),
     ],
 )
@@ -182,10 +190,13 @@ def test_invalid_params_fail_early(run, args, message):
     assert not tasks
 
 
-def test_gcb_profile_needs_both_containers(run):
-    result, _out, tasks = run('--align_container', 'image:1', profile='test,gcb')
+def test_workflow_needs_both_containers(run, tmp_path):
+    # the test profile sets placeholder containers, and an empty value can't be passed on the command line
+    unset = tmp_path / 'no_cpg_container.config'
+    unset.write_text('params.cpg_container = null\n')
+    result, _out, tasks = run('-c', str(unset), '--align_container', 'image:1')
     assert result.returncode != 0
-    assert 'The gcb profile needs --align_container and --cpg_container' in result.stdout + result.stderr
+    assert 'The workflow needs --align_container and --cpg_container' in result.stdout + result.stderr
     assert not tasks
 
 
