@@ -167,10 +167,13 @@ test/                         pytest: sample sheet unit tests, stub runs of main
 
 ```bash
 # production (the launcher adds -work-dir and google.project)
-nextflow run main.nf -profile gcb \
+nextflow run main.nf \
     --dataset <ds> --sequencing_type genome --arGuid <guid> --cohorts COH1,COH2 \
     --bwa_index_prefix gs://.../Homo_sapiens_assembly38_masked.fasta \
     --align_container <image> --cpg_container <image>
+  
+# or realistically... 
+analysis-runner seqera ...
 
 # offline wiring check
 nextflow run main.nf -profile test -stub --dataset ds --sequencing_type genome \
