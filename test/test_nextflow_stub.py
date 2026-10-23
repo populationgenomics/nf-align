@@ -131,7 +131,7 @@ def test_failed_sgs_are_dropped_and_reported(run, tmp_path):
     assert (out / 'cram' / 'CPG6.cram').exists()
     failed = read_tsv(out / RUN_DIR / 'failed.csv', sep=',')
     assert sorted((r['id'], r['failed_at']) for r in failed) == [('CPG3', 'align'), ('CPG6', 'register')]
-    assert '2 SG(s) failed and were skipped' in result.stdout
+    assert '2 SG(s) failed and were skipped' in result.stdout + result.stderr
 
 
 def test_existing_outputs_fail_the_run_before_any_alignment(run):
@@ -141,9 +141,11 @@ def test_existing_outputs_fail_the_run_before_any_alignment(run):
 
     result, _out, tasks = run()
     assert result.returncode != 0
-    assert '14 output(s) already exist' in result.stdout
-    assert f'{out}/cram/CPG2.cram.crai' in result.stdout
-    assert 'CPG9' not in result.stdout
+    # log.warn/log.error go to stderr, or to stdout when nextflow detects an AI agent (e.g. CLAUDECODE is set)
+    console = result.stdout + result.stderr
+    assert '14 output(s) already exist' in console
+    assert f'{out}/cram/CPG2.cram.crai' in console
+    assert 'CPG9' not in console
     assert not [t for t in tasks if t['status'] == 'COMPLETED']
 
 
