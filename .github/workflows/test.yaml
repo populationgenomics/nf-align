@@ -17,4 +17,4 @@ jobs:
         with:
           version: '26.10.3'
       - run: uv run pytest -rs
-      - run: nextflow lint
+      - run: nextflow lint main.nf
