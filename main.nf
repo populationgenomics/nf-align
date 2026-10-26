@@ -63,6 +63,9 @@ def validateParams() {
     if (!(params.align_container && params.cpg_container)) {
         error('The workflow needs --align_container and --cpg_container')
     }
+    if (!(params.register.toString() in ['true', 'false'])) {
+        error("--register must be true or false, got '${params.register}'")
+    }
 }
 
 /*
@@ -114,6 +117,8 @@ workflow {
     // matches {genome,exome}_realignment_shards in cpg-flow's config_template.toml
     // CLI params arrive as strings, and `1..'2'` would silently range over char codes
     def shards = params.realignment_shards.toInteger() ?: (params.sequencing_type == 'genome' ? 6 : 1)
+    // likewise `--register false` arrives as the string 'false', which Groovy treats as true
+    def register = params.register.toString().toBoolean()
 
     // the FASTA and everything that sits beside it: its .fai, and the bwa-mem3 index built with the FASTA as prefix.
     // Staged side by side, so the FASTA's own name is the bwa-mem3 index prefix. A .dict is deliberately left out (RISKS.md)
@@ -159,7 +164,7 @@ workflow {
     ALIGN(checked, rows.aligned, reference, shards, params.dupblaster_extra_args)
 
     def registered = channel.empty()
-    if (params.register) {
+    if (register) {
         registered = REGISTER_ANALYSIS(
             ALIGN.out.cram.map { meta, _cram, _crai -> [meta, uriOf(workflow.outputDir.resolve(cramPath(meta)))] },
             metamistProject(),
@@ -175,7 +180,7 @@ workflow {
         .mix(registered.map { meta -> [meta.id, 'registered'] })
         .groupTuple()
         .map { id, events ->
-            def failed_at = !('aligned' in events) ? 'align' : (params.register && !('registered' in events) ? 'register' : null)
+            def failed_at = !('aligned' in events) ? 'align' : (register && !('registered' in events) ? 'register' : null)
             [id: id, failed_at: failed_at]
         }
         .filter { record -> record.failed_at }
