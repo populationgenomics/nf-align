@@ -33,8 +33,10 @@ case $kind in
   cram|bam)
     # bazam wants foo.crai / foo.bai, not foo.cram.crai / foo.bam.bai
     [ -e "${1%m}i" ] || ln -s "$(realpath "$2")" "${1%m}i"
+    # the bazam wrapper is `java ${JAVA_OPTS} -jar bazam.jar "$@"`, so JVM options must go in JAVA_OPTS:
+    # passed as arguments, bazam rejects them and exits before reading anything
     # interleaved pairs on stdin (-p -); pipefail catches a failure on either side
-    bazam -Xmx16g -Dsamjdk.reference_fasta="$3" -n"$read_threads" -bam "$1" ${shard:+-s "$shard"} \
+    JAVA_OPTS="-Xmx16g -Dsamjdk.reference_fasta=$3" bazam -n"$read_threads" -bam "$1" ${shard:+-s "$shard"} \
       | "${bwa[@]}" -p "$index" -
     ;;
   *)
