@@ -36,7 +36,7 @@ def run(tmp_path, cohort_sgs):
         *args: str,
         sequencing_type: str = 'genome',
         inputs: tuple = ('--samplesheet', str(sheet)),
-        index: tuple = ('--bwa_index_prefix', str(refs / 'ref.fasta')),
+        reference: tuple = ('--ref_fasta', str(refs / 'ref.fasta')),
         profile: str = 'test',
     ):
         out = tmp_path / 'results'
@@ -51,8 +51,7 @@ def run(tmp_path, cohort_sgs):
                 '--dataset', PROJECT,
                 '--sequencing_type', sequencing_type,
                 '--realignment_shards', '2',
-                '--ref_fasta', str(refs / 'ref.fasta'),
-                *index,
+                *reference,
                 *args,
             ],
             cwd=tmp_path,
@@ -202,8 +201,11 @@ def test_workflow_needs_both_containers(run, tmp_path):
     assert not tasks
 
 
-def test_missing_required_params_fail_early(run):
-    result, _out, tasks = run(index=())
+def test_missing_required_params_fail_early(run, tmp_path):
+    # ref_fasta has a default, so unset it from config
+    unset = tmp_path / 'no_ref.config'
+    unset.write_text('params.ref_fasta = null\n')
+    result, _out, tasks = run('-c', str(unset), reference=())
     assert result.returncode != 0
-    assert 'Missing required params: --bwa_index_prefix' in result.stdout + result.stderr
+    assert 'Missing required params: --ref_fasta' in result.stdout + result.stderr
     assert not tasks

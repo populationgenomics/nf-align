@@ -4,7 +4,7 @@ process ALIGN_SHARD {
 
     input:
     tuple val(meta), val(unit), path(reads, stageAs: 'in/*'), val(shard)
-    tuple val(index_name), path(index_files, stageAs: 'bwa_index/*')
+    tuple path(fasta), path(ref_files)
 
     output:
     tuple val(meta), path("${meta.id}.${unit}.bam")
@@ -13,7 +13,7 @@ process ALIGN_SHARD {
     """
     eval "\$(threads.sh ${task.cpus})"
     mkdir -p tmp
-    align_stream.sh ${meta.kind} '${shard}' bwa_index/${index_name} ${meta.id} \$BWA_THREADS \$READ_THREADS ${reads} \\
+    align_stream.sh ${meta.kind} '${shard}' ${fasta} ${meta.id} \$BWA_THREADS \$READ_THREADS ${reads} \\
       | samtools sort -n -@\$SORT_THREADS -T tmp/sort -o ${meta.id}.${unit}.bam
     check_alignments.sh ${meta.id}.${unit}.bam
     """

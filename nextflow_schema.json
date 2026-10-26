@@ -47,15 +47,11 @@
         "alignment": {
             "title": "Alignment",
             "type": "object",
-            "required": ["ref_fasta", "bwa_index_prefix"],
+            "required": ["ref_fasta"],
             "properties": {
                 "ref_fasta": {
                     "type": "string",
-                    "description": "Reference FASTA (with .fai) that reads are aligned to and CRAMs are encoded against."
-                },
-                "bwa_index_prefix": {
-                    "type": "string",
-                    "description": "bwa-mem3 index prefix: <prefix>.{bwt.2bit.64,amb,ann,pac}, built from ref_fasta."
+                    "description": "Reference FASTA that reads are aligned to and CRAMs are encoded against, with <ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac} alongside it (the bwa-mem3 index, built with the FASTA as prefix)."
                 },
                 "realignment_shards": {
                     "type": "integer",

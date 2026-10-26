@@ -4,8 +4,7 @@ process ALIGN_TO_CRAM {
 
     input:
     tuple val(meta), val(unit), path(reads, stageAs: 'in/*'), val(shard)
-    tuple val(index_name), path(index_files, stageAs: 'bwa_index/*')
-    tuple path(fasta), path(fai)
+    tuple path(fasta), path(ref_files)
     val dupblaster_args
 
     output:
@@ -15,7 +14,7 @@ process ALIGN_TO_CRAM {
     script:
     """
     eval "\$(threads.sh ${task.cpus})"
-    align_stream.sh ${meta.kind} '${shard}' bwa_index/${index_name} ${meta.id} \$BWA_THREADS \$READ_THREADS ${reads} \\
+    align_stream.sh ${meta.kind} '${shard}' ${fasta} ${meta.id} \$BWA_THREADS \$READ_THREADS ${reads} \\
       | dedup_to_cram.sh ${meta.id} ${fasta} \$SORT_THREADS \$WRITE_THREADS ${dupblaster_args}
     """
 

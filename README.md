@@ -10,11 +10,11 @@ duplicates with dupblaster, publishes into the dataset bucket (`cram/<SG>.cram`,
 ```bash
 nextflow run main.nf \
     --dataset <dataset> --sequencing_type genome --arGuid <guid> --cohorts COH1,COH2 \
-    --bwa_index_prefix <index prefix> --align_container <image> --cpg_container <image>
+    --align_container <image> --cpg_container <image>
 
 # offline wiring check, and the tests
 nextflow run main.nf -profile test -stub --dataset ds --sequencing_type genome \
-    --samplesheet sheet.tsv --ref_fasta refs/ref.fasta --bwa_index_prefix refs/ref.fasta
+    --samplesheet sheet.tsv --ref_fasta refs/ref.fasta
 uv sync && uv run pytest
 ```
 

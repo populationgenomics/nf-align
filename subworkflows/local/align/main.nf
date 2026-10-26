@@ -14,8 +14,7 @@ workflow ALIGN {
     take:
     to_align        // [meta, sample sheet row] with meta.kind in fastq | fastq_ora | cram | bam
     aligned         // [meta, sample sheet row] with meta.kind == aligned
-    reference       // value: [fasta, fai]
-    bwa_index       // value: [index name, index files]
+    reference       // value: [fasta, [fai and bwa-mem3 index files, named <fasta>.<ext>]]
     shards          // int: bazam shards per CRAM/BAM input
     dupblaster_args // string: extra dupblaster arguments, inserted into the command line verbatim
 
@@ -49,12 +48,12 @@ workflow ALIGN {
             sharded: true
         }
 
-    ALIGN_TO_CRAM(units.single, bwa_index, reference, dupblaster_args)
+    ALIGN_TO_CRAM(units.single, reference, dupblaster_args)
 
     // groupKey releases each SG as soon as its last shard finishes; sorting keeps -resume hashes stable.
     // An SG that lost a shard to a failed task never completes its group, and groupTuple's default
     // `remainder: false` drops it instead of merging the shards that survived.
-    def shard_bams = ALIGN_SHARD(units.sharded, bwa_index)
+    def shard_bams = ALIGN_SHARD(units.sharded, reference)
         .map { meta, bam -> [groupKey(meta, meta.units), bam] }
         .groupTuple(sort: true)
         .map { key, bams -> [key.getGroupTarget(), bams] }

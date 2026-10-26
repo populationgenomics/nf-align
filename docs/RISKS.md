@@ -91,8 +91,8 @@ documentation.
     and GENCODE bwa-mem2 builds. Building one needs about 76 GB of RAM: run `bwa-mem3 index` on a
     highmem machine once, and store the result next to the FASTA.
 21. **bwa-mem3 index sidecars.** If `<prefix>.dict` or `<prefix>.hdr` sits next to the index, bwa-mem3
-    copies its `@SQ` lines verbatim. Only the four index files are staged (`bwt.2bit.64, amb, ann, pac`),
-    so no sidecar is seen. Staging a `.dict` later would change the CRAM headers.
+    copies its `@SQ` lines verbatim. Only the suffixes in `ref_suffixes` (main.nf) are staged
+    (`fai, bwt.2bit.64, amb, ann, pac`), so no sidecar is seen. Adding `dict` there would change the CRAM headers.
 22. **How the masked FASTA treats alt contigs wasn't checked.** We align without alt awareness (no
     `.alt`). Check how alt contigs show up in the first real CRAMs.
 23. **The input reference falls back to the alignment reference.** A CRAM whose assay has no

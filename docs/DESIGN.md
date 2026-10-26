@@ -25,7 +25,7 @@ One run covers **one dataset and one sequencing type** ([ADR 0001](adr/0001-one-
 | `accessLevel` | `full` / `standard` (equivalent), or `test`. Selects the Metamist project (`<dataset>` or `<dataset>-test`) and the default bucket (`gs://cpg-<dataset>-main` or `-test`) |
 | `arGuid` | the analysis-runner GUID, used in resource labels, the per-run record directory and the registered analyses. Mandatory |
 | `cohorts` **or** `sgids` **or** `samplesheet` | exactly one: Metamist cohort IDs, Metamist SG IDs (queried directly), or a prepared sheet that skips the Metamist step |
-| `bwa_index_prefix`, `ref_fasta` | the alignment reference and its bwa-mem3 index ([ADR 0006](adr/0006-dragen-masked-reference-alt-unaware.md)) |
+| `ref_fasta` | the alignment reference. Its `.fai` and bwa-mem3 index (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac}`) must sit beside it ([ADR 0006](adr/0006-dragen-masked-reference-alt-unaware.md)) |
 | `align_container`, `cpg_container` | null until the images are built; the `gcb` profile refuses to run without them |
 
 `outputDir` defaults to the dataset bucket. The launcher supplies `-work-dir` and `google.project`;
@@ -172,7 +172,6 @@ test/                         pytest: sample sheet unit tests, stub runs of main
 # production (the launcher adds -work-dir and google.project)
 nextflow run main.nf \
     --dataset <ds> --sequencing_type genome --arGuid <guid> --cohorts COH1,COH2 \
-    --bwa_index_prefix gs://.../Homo_sapiens_assembly38_masked.fasta \
     --align_container <image> --cpg_container <image>
   
 # or realistically... 
@@ -180,7 +179,7 @@ analysis-runner seqera ...
 
 # offline wiring check
 nextflow run main.nf -profile test -stub --dataset ds --sequencing_type genome \
-    --samplesheet sheet.tsv --ref_fasta refs/ref.fasta --bwa_index_prefix refs/ref.fasta
+    --samplesheet sheet.tsv --ref_fasta refs/ref.fasta
 
 # tests (sample sheet unit tests + stub runs; the stub runs are skipped without nextflow)
 uv run pytest
@@ -203,7 +202,8 @@ parameter validation.
 1. **Build the images.** `align_container` needs bazam, bwa-mem3, dupblaster, samtools and orad;
    `cpg_container` needs metamist and cpg_utils.
 2. **Build the bwa-mem3 index** for `Homo_sapiens_assembly38_masked.fasta`. That needs about 76 GB of RAM
-   ([RISKS.md](RISKS.md)). Then set `bwa_index_prefix` and the container defaults in `nextflow.config`.
+   ([RISKS.md](RISKS.md)). Write it next to the FASTA (`bwa-mem3 index <fasta>`), then set the container
+   defaults in `nextflow.config`.
 3. **A real run on a small test dataset.** Only stubs have run so far, so the process scripts, images,
    resources, Metamist access from Batch and registration are all untested.
 4. **Tiny real-data fixtures** (a small contig with its index, and a few thousand pairs as FQ/BAM/CRAM)

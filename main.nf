@@ -43,7 +43,7 @@ def idList(param) {
 }
 
 def validateParams() {
-    def missing = ['dataset', 'sequencing_type', 'arGuid', 'ref_fasta', 'bwa_index_prefix'].findAll { name -> !params[name] }
+    def missing = ['dataset', 'sequencing_type', 'arGuid', 'ref_fasta'].findAll { name -> !params[name] }
     if (missing) {
         error("Missing required params: ${missing.collect { name -> '--' + name }.join(', ')}")
     }
@@ -115,9 +115,10 @@ workflow {
     // CLI params arrive as strings, and `1..'2'` would silently range over char codes
     def shards = params.realignment_shards.toInteger() ?: (params.sequencing_type == 'genome' ? 6 : 1)
 
-    def reference = channel.value([file(params.ref_fasta), file("${params.ref_fasta}.fai")])
-    def index_name = file(params.bwa_index_prefix).name
-    def bwa_index = channel.value([index_name, ['bwt.2bit.64', 'amb', 'ann', 'pac'].collect { ext -> file("${params.bwa_index_prefix}.${ext}") }])
+    // the FASTA and everything that sits beside it: its .fai, and the bwa-mem3 index built with the FASTA as prefix.
+    // Staged side by side, so the FASTA's own name is the bwa-mem3 index prefix. A .dict is deliberately left out (RISKS.md)
+    def ref_suffixes = ['fai', 'bwt.2bit.64', 'amb', 'ann', 'pac']
+    def reference = channel.value([file(params.ref_fasta), ref_suffixes.collect { ext -> file("${params.ref_fasta}.${ext}") }])
 
     // there are three entrypoints: --cohorts, --sgids and --samplesheet. If a samplesheet is given as input, it
     // shouldn't be written to the output folder. built_sheet vs. sheet differentiates the two cases
@@ -155,7 +156,7 @@ workflow {
         .toList()
         .flatMap { items -> checkNoExistingOutputs(items) }
 
-    ALIGN(checked, rows.aligned, reference, bwa_index, shards, params.dupblaster_extra_args)
+    ALIGN(checked, rows.aligned, reference, shards, params.dupblaster_extra_args)
 
     def registered = channel.empty()
     if (params.register) {
