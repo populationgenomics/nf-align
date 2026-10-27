@@ -88,6 +88,13 @@ def test_bad_sgs_are_reported_together():
     assert [line.split(':')[0] for line in str(error.value).splitlines()] == ['CPG1', 'CPG2', 'CPG3', 'CPG4']
 
 
+def test_cram_without_a_reference_fails():
+    # decoding with ref_fasta instead fails, deep in bazam, when the CRAM was written against another reference
+    meta = {'reads_type': 'cram', 'reads': {'location': 'gs://b/CPG1.cram'}}
+    with pytest.raises(SamplesheetError, match=r'CPG1: "reference_assembly\.location" is required for cram assays'):
+        rows_for(sg('CPG1', [meta]))
+
+
 def test_fetch_cohorts_is_scoped_to_the_project(monkeypatch):
     calls = []
 

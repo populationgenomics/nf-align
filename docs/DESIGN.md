@@ -62,7 +62,8 @@ the config never sets them.
   is not republished.
 
 Columns: `sg_id, kind, n_units, unit, r1, r2, reads, reads_index, reads_ref`. For a CRAM, `reads_ref`
-is the reference it was written against; for ORA, it's the ORA reference tarball.
+is the reference it was written against, and is required: a CRAM is never decoded with `ref_fasta`. For ORA,
+it's the ORA reference tarball.
 
 ### 2. Pre-flight
 

@@ -146,6 +146,10 @@ workflow {
             if (!(r.kind in kinds)) {
                 fail("Unknown kind '${r.kind}' for ${r.sg_id}, expected one of ${kinds}")
             }
+            // a CRAM decodes only against the reference it was written with. A BAM's ref is staged but never read
+            if (r.kind == 'cram' && !r.reads_ref) {
+                fail("${r.sg_id}: a cram row needs reads_ref, the reference the CRAM was written against")
+            }
             def meta = [id: r.sg_id, kind: r.kind, units: r.n_units.toInteger(), ref: r.reads_ref ?: params.ref_fasta]
             [meta, r]
         }

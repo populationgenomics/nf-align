@@ -191,6 +191,19 @@ def test_invalid_params_fail_early(run, args, message):
     assert not tasks
 
 
+def test_cram_row_without_a_reference_fails_early(run, tmp_path):
+    sheet = tmp_path / 'sheet.tsv'
+    rows = read_tsv(sheet)
+    for row in rows:
+        if row['kind'] == 'cram':
+            row['reads_ref'] = ''
+    write_sheet(rows, str(sheet))
+    result, _out, tasks = run()
+    assert result.returncode != 0
+    assert 'CPG3: a cram row needs reads_ref' in result.stdout + result.stderr
+    assert not [t for t in tasks if t['status'] == 'COMPLETED']
+
+
 def test_workflow_needs_both_containers(run, tmp_path):
     # the test profile sets placeholder containers, and an empty value can't be passed on the command line
     unset = tmp_path / 'no_cpg_container.config'

@@ -153,7 +153,12 @@ def alignment_file_rows(sg_id: str, meta: dict) -> list[dict]:
         index = secondary[0]['location']
         if not index.endswith('.crai' if reads_type == 'cram' else '.bai'):
             raise SamplesheetError(f'{sg_id}: unexpected index {index} for {location}')
-    ref = (meta.get('reference_assembly') or {}).get('location', '') if reads_type == 'cram' else ''
+    ref = ''
+    if reads_type == 'cram':
+        # a CRAM decodes only against the reference it was written with, so there's no falling back to ref_fasta
+        ref = (meta.get('reference_assembly') or {}).get('location') or ''
+        if not ref:
+            raise SamplesheetError(f'{sg_id}: "reference_assembly.location" is required for cram assays')
     return [
         {
             'sg_id': sg_id,

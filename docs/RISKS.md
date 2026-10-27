@@ -95,9 +95,10 @@ documentation.
     (`fai, bwt.2bit.64, amb, ann, pac`), so no sidecar is seen. Adding `dict` there would change the CRAM headers.
 22. **How the masked FASTA treats alt contigs wasn't checked.** We align without alt awareness (no
     `.alt`). Check how alt contigs show up in the first real CRAMs.
-23. **The input reference falls back to the alignment reference.** A CRAM whose assay has no
-    `reference_assembly.location` is decoded with `ref_fasta`. If it was actually encoded against
-    another reference, decoding fails in `SORT_INDEX` or in bazam.
+23. **The input reference falls back to the alignment reference.** ✅ A CRAM whose assay has no
+    `reference_assembly.location` used to be decoded with `ref_fasta`, and failed in bazam with a reference
+    MD5 mismatch when it was written against another reference. Such a CRAM now fails the sample sheet build,
+    and a `cram` row with no `reads_ref` fails the run before any work starts.
 
 ## Metamist and GCS
 
