@@ -227,3 +227,6 @@ results/
 
 # PyCharm specific
 .idea
+
+## LLMs
+GLOSSARY.md
