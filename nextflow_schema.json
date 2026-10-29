@@ -1,0 +1,107 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://raw.githubusercontent.com/populationgenomics/nf-align/main/nextflow_schema.json",
+    "title": "nf-align parameters",
+    "description": "FASTQ / BAM / CRAM -> deduplicated CRAM with bwa-mem3 and dupblaster, driven by Metamist cohorts or sequencing groups. main.nf validates these itself; this schema drives launch forms.",
+    "type": "object",
+    "$defs": {
+        "run": {
+            "title": "What to align",
+            "type": "object",
+            "required": ["dataset", "sequencing_type", "arGuid"],
+            "properties": {
+                "dataset": {
+                    "type": "string",
+                    "description": "Metamist dataset (project) name, without any -test suffix. Sets the output bucket and the registration project."
+                },
+                "sequencing_type": {
+                    "type": "string",
+                    "enum": ["genome", "exome"],
+                    "description": "One sequencing type per run. Exome outputs are written under exome/."
+                },
+                "accessLevel": {
+                    "type": "string",
+                    "enum": ["full", "standard", "test"],
+                    "default": "standard",
+                    "description": "full and standard are equivalent. test queries and registers in <dataset>-test and writes to gs://cpg-<dataset>-test."
+                },
+                "arGuid": {
+                    "type": "string",
+                    "description": "analysis-runner GUID: labels compute, names the per-run record directory, and is recorded on each analysis."
+                },
+                "cohorts": {
+                    "type": "string",
+                    "description": "Comma-separated Metamist cohort IDs to build the sample sheet from. Exactly one of cohorts, sgids or samplesheet."
+                },
+                "sgids": {
+                    "type": "string",
+                    "description": "Comma-separated Metamist sequencing group IDs, queried directly instead of through cohorts. Each must be a short-read SG of sequencing_type in this project. Exactly one of cohorts, sgids or samplesheet."
+                },
+                "samplesheet": {
+                    "type": "string",
+                    "format": "file-path",
+                    "description": "A prepared sample sheet TSV, skipping the Metamist query. Exactly one of cohorts, sgids or samplesheet."
+                }
+            }
+        },
+        "alignment": {
+            "title": "Alignment",
+            "type": "object",
+            "required": ["ref_fasta"],
+            "properties": {
+                "ref_fasta": {
+                    "type": "string",
+                    "description": "Reference FASTA that reads are aligned to and CRAMs are encoded against, with <ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac} alongside it (the bwa-mem3 index, built with the FASTA as prefix)."
+                },
+                "realignment_shards": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "bazam shards per CRAM/BAM input. 0 means 6 for genomes, 1 for exomes."
+                },
+                "dupblaster_extra_args": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Extra dupblaster arguments, appended verbatim to its command line, so quote them as for bash."
+                }
+            }
+        },
+        "registration": {
+            "title": "Metamist registration",
+            "type": "object",
+            "properties": {
+                "register": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Register each published CRAM as a Metamist 'cram' analysis."
+                },
+                "register_wait_minutes": {
+                    "type": "integer",
+                    "default": 30,
+                    "minimum": 1,
+                    "description": "How long registration waits for a CRAM and its index to be published."
+                }
+            }
+        },
+        "containers": {
+            "title": "Containers",
+            "type": "object",
+            "properties": {
+                "align_container": {
+                    "type": "string",
+                    "description": "Image with bazam, bwa-mem3, dupblaster, samtools and orad.."
+                },
+                "cpg_container": {
+                    "type": "string",
+                    "description": "Image with metamist and cpg_utils, for the sample sheet and registration."
+                }
+            }
+        }
+    },
+    "allOf": [
+        { "$ref": "#/$defs/run" },
+        { "$ref": "#/$defs/alignment" },
+        { "$ref": "#/$defs/registration" },
+        { "$ref": "#/$defs/containers" }
+    ]
+}
