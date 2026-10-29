@@ -45,11 +45,12 @@ One sequencing event for an SG, as recorded in Metamist. Its metadata records th
 locations. An SG can have several assays, and their reads are combined.
 
 **Analysis**:
-A Metamist record of an output file (here, a `cram`), linked to the SGs it covers. It's only trusted
-when it is completed and active.
+A Metamist record of an output file (e.g. a `cram`, `gvcf` or `vds`), linked to the SGs or cohorts it
+covers. It's trusted when it is active. `completed` is a Metamist status, but it isn't relied on.
 
 **Registration**:
-Creating an analysis for an output that has been published.
+Creating an analysis for a finished output: one that has been published, or that was written directly to
+its final path (as a VDS is).
 _Avoid_: recording, submission
 
 **ar-guid**:
@@ -60,7 +61,8 @@ _Avoid_: run ID
 ### Inputs
 
 **Sample sheet**:
-The run's work list: one row per alignment unit. It's built from cohorts or SG IDs, or supplied directly.
+The run's work list, built from Metamist or supplied directly. Each pipeline defines what one row is: in
+alignment, an alignment unit; in combining, one SG with its gVCF and the dataset the SG belongs to.
 _Avoid_: manifest, input sheet
 
 **Kind**:
@@ -129,8 +131,8 @@ aligns without alt awareness.
 ### Outputs and runs
 
 **Published output**:
-A file copied from the pipeline into the dataset bucket at its conventional path. Only published
-outputs are registered.
+A file copied from the pipeline into the dataset bucket at its conventional path. A VDS is never
+published: it's written directly to its final path.
 
 **Output clash**:
 A path that this run would publish, but which already exists. It stops the run before any alignment.
@@ -142,3 +144,29 @@ published CRAMs, and the failed SGs.
 **Failed SG**:
 An SG that was dropped part-way through a run, at either the `align` or the `register` step. The rest of
 the run carries on, and the SG is listed in the run records.
+
+### Combining
+
+**gVCF**:
+One SG's single-sample genomic VCF, recorded in Metamist as an analysis of type `gvcf`. Every SG combined
+must have exactly one distinct active gVCF. Several active analyses pointing at the same file count as
+one.
+_Avoid_: VCF (a gVCF also records reference blocks)
+
+**VDS**:
+A Hail VariantDataset: many SGs' variant and reference data combined into one dataset. It is built from
+gVCFs, and can be built on top of an earlier VDS.
+_Avoid_: matrix table, callset
+
+**Base VDS**:
+The earlier VDS a combine builds on. SGs in it that are no longer requested are removed, and requested SGs
+it lacks are added from their gVCFs.
+_Avoid_: previous VDS, prior VDS
+
+**Fresh build**:
+A combine that ignores any base VDS and builds the VDS from gVCFs alone.
+
+**Refresh**:
+Replacing an SG's data in the VDS with its current gVCF. It's needed when an SG keeps its ID but its gVCF
+changes, which the VDS can't detect by itself. A refreshed SG is removed from the base VDS and added back.
+_Avoid_: replace (used loosely for a sample getting a new SG)
