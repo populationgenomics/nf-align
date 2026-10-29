@@ -122,8 +122,8 @@ workflow {
 
     // the FASTA and everything that sits beside it: its .fai, and the bwa-mem3 index built with the FASTA as prefix.
     // Staged side by side, so the FASTA's own name is the bwa-mem3 index prefix. A .dict is deliberately left out (RISKS.md)
-    def ref_suffixes = ['fai', 'bwt.2bit.64', 'amb', 'ann', 'pac']
-    def reference = channel.value([file(params.ref_fasta), ref_suffixes.collect { ext -> file("${params.ref_fasta}.${ext}") }])
+    def ref_suffixes = ['fai', 'bwt.2bit.64', 'amb', 'ann', 'pac', 'alt']
+    def reference = channel.value([file(params.ref_fasta), file(params.ref_fasta_dict), ref_suffixes.collect { ext -> file("${params.ref_fasta}.${ext}") }])
 
     // there are three entrypoints: --cohorts, --sgids and --samplesheet. If a samplesheet is given as input, it
     // shouldn't be written to the output folder. built_sheet vs. sheet differentiates the two cases
@@ -174,6 +174,7 @@ workflow {
             metamistProject(),
             params.sequencing_type,
             params.arGuid,
+            params.ref_fasta,
             params.register_wait_minutes.toInteger(),
         )
     }

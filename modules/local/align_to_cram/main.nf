@@ -4,7 +4,7 @@ process ALIGN_TO_CRAM {
 
     input:
     tuple val(meta), val(unit), path(reads, stageAs: 'in/*'), val(shard)
-    tuple path(fasta), path(ref_files)
+    tuple path(fasta), path(fasta_dict), path(ref_files)
     val dupblaster_args
 
     output:

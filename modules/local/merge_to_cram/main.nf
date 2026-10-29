@@ -4,7 +4,7 @@ process MERGE_TO_CRAM {
 
     input:
     tuple val(meta), path(bams, stageAs: 'shards/*')
-    tuple path(fasta), path(ref_files)
+    tuple path(fasta), path(fasta_dict), path(ref_files)
     val dupblaster_args
 
     output:

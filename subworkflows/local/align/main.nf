@@ -14,7 +14,7 @@ workflow ALIGN {
     take:
     to_align        // [meta, sample sheet row] with meta.kind in fastq | fastq_ora | cram | bam
     aligned         // [meta, sample sheet row] with meta.kind == aligned
-    reference       // value: [fasta, [fai and bwa-mem3 index files, named <fasta>.<ext>]]
+    reference       // value: [fasta, fasta_dict, [fai and bwa-mem3 index files, named <fasta>.<ext>]]
     shards          // int: bazam shards per CRAM/BAM input
     dupblaster_args // string: extra dupblaster arguments, inserted into the command line verbatim
 

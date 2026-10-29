@@ -8,6 +8,7 @@ process REGISTER_ANALYSIS {
     val project
     val sequencing_type
     val ar_guid
+    val fasta
     val wait_minutes // how long to wait for the CRAM and index to be published
 
     output:
@@ -30,13 +31,13 @@ process REGISTER_ANALYSIS {
         --type cram \\
         --secondary index=${cram_uri}.crai \\
         --sgs ${meta.id} \\
-        --meta sequencing_type=${sequencing_type} ar-guid=${ar_guid}
+        --meta sequencing_type=${sequencing_type} ar-guid=${ar_guid} ref_fasta=${fasta}
     """
 
     stub:
     """
     echo python3 -m cpg_utils.metamist_registration --dry --project ${project} --output ${cram_uri} \\
         --type cram --secondary index=${cram_uri}.crai --sgs ${meta.id} \\
-        --meta sequencing_type=${sequencing_type} ar-guid=${ar_guid}
+        --meta sequencing_type=${sequencing_type} ar-guid=${ar_guid} reference=${fasta}
     """
 }
