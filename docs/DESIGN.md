@@ -33,7 +33,7 @@ doesn't matter: a cohort in `alpha` that holds an SG from `beta` sends that SG's
 | `arGuid` | the analysis-runner GUID, used in resource labels, the per-run record directory and the registered analyses. Mandatory |
 | `cohorts` **or** `sgids` **or** `samplesheet` | exactly one: Metamist cohort IDs, Metamist SG IDs (queried directly), or a prepared sheet that skips the Metamist step |
 | `output_root` | null by default, so each dataset's outputs go to its bucket. If set (the `test` profile sets `results`), they go to `<output_root>/<ds>/` instead, with the same layout below that |
-| `ref_fasta` | the alignment reference. Its `.fai` and bwa-mem3 index (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac}`) must sit beside it ([ADR 0010](adr/0010-gatk-unmasked-reference-alt-unaware.md)) |
+| `ref_fasta` | the alignment reference. Its `.fai`, bwa-mem3 index and `.alt` (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac,alt}`) must sit beside it, and `ref_fasta_dict` is its alt-annotated `.dict`. Aligned alt-aware ([ADR 0010](adr/0010-gatk-unmasked-reference-alt-aware.md)) |
 | `align_container`, `cpg_container` | the images, with defaults in `nextflow.config`. The run fails at launch if either is unset, in every profile |
 
 There is no `outputDir`: every destination is worked out per SG (see Outputs). The launcher supplies

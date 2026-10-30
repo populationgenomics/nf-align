@@ -55,7 +55,11 @@
             "properties": {
                 "ref_fasta": {
                     "type": "string",
-                    "description": "Reference FASTA that reads are aligned to and CRAMs are encoded against, with <ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac} alongside it (the bwa-mem3 index, built with the FASTA as prefix)."
+                    "description": "Reference FASTA that reads are aligned to and CRAMs are encoded against, with <ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac,alt} alongside it (the bwa-mem3 index, built with the FASTA as prefix, and the .alt file that makes the alignment alt-aware)."
+                },
+                "ref_fasta_dict": {
+                    "type": "string",
+                    "description": "Alt-annotated sequence dictionary of ref_fasta (samtools dict --alt). bwa-mem3 copies its @SQ lines, with their AH tags, into every CRAM header."
                 },
                 "realignment_shards": {
                     "type": "integer",

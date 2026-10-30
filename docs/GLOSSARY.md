@@ -138,7 +138,7 @@ The per-library summary of duplicate marking, kept alongside each CRAM as
 
 **Alt contigs**:
 The alternative haplotype sequences in hg38. An alt-aware aligner treats them specially. This pipeline
-aligns without alt awareness.
+aligns alt-aware: bwa-mem3 reads the `.alt` file beside the alignment reference (ADR 0010).
 
 ### Outputs and runs
 
