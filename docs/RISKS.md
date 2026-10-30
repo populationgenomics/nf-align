@@ -70,8 +70,8 @@ documentation.
     - output that is query-grouped (`GO:query`)
     - `-K` making output identical regardless of thread count
 13. **bwa-mem3 needs AVX2.** On a CPU without it, it exits with code 2. N1 machines may not have AVX2,
-    which is why the align processes are limited to `n2-*,n2d-*,c2d-*,c3d-*`. If you add a machine
-    family, check it.
+    which is why the align processes use N2 machine types. If you change their machine family, check
+    that it has AVX2.
 14. **An OOM-killed aligner can leave a valid but empty BAM** that exits 0 when its exit status is lost
     (no `pipefail`, or a background producer whose status nobody collects). This design uses `pipefail`,
     pipes bazam into bwa-mem3, and runs `check_alignments.sh`. FASTQ.ora is the one FIFO path: each
@@ -136,3 +136,12 @@ documentation.
     `test_per_sg_tasks_are_labelled_with_the_sgs_dataset` checks every per-SG task's label in a stub run.
     That Google Batch applies those labels to the VM, so the cost is attributed to the SG's dataset,
     hasn't been checked.
+
+## Cost
+
+32. **Seqera's cost estimates need exact machine types.** With `NXF_CLOUDINFO_ENABLED=false`, Nextflow
+    only records a task's machine type in the trace when the process names one exact `machineType`.
+    For a list of types or a wildcard, Google Batch picks the VM, but the type isn't recorded, and Seqera
+    has nothing to estimate the task's cost from. Nothing fails, so the estimates just go missing. That's
+    why every process in `conf/base.config` names one exact type per attempt. Keep it that way when
+    adding a process or changing resources. This hasn't been checked against a Seqera run yet.

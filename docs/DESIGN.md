@@ -34,7 +34,7 @@ doesn't matter: a cohort in `alpha` that holds an SG from `beta` sends that SG's
 | `cohorts` **or** `sgids` **or** `samplesheet` | exactly one: Metamist cohort IDs, Metamist SG IDs (queried directly), or a prepared sheet that skips the Metamist step |
 | `output_root` | null by default, so each dataset's outputs go to its bucket. If set (the `test` profile sets `results`), they go to `<output_root>/<ds>/` instead, with the same layout below that |
 | `ref_fasta` | the alignment reference. Its `.fai` and bwa-mem3 index (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac}`) must sit beside it ([ADR 0006](adr/0006-dragen-masked-reference-alt-unaware.md)) |
-| `align_container`, `cpg_container` | null until the images are built; the `gcb` profile refuses to run without them |
+| `align_container`, `cpg_container` | the images, with defaults in `nextflow.config`. The run fails at launch if either is unset, in every profile |
 
 There is no `outputDir`: every destination is worked out per SG (see Outputs). The launcher supplies
 `-work-dir` and `google.project`; the config never sets them.
@@ -189,19 +189,27 @@ Metrics are not registered.
 
 ## Resources (`conf/base.config`)
 
-| process | CPUs | memory | disk (genome / exome) | machines |
+| process | CPUs | memory | disk (genome / exome) | machine type, by attempt |
 |---|---|---|---|---|
-| `ALIGN_TO_CRAM`, `ALIGN_SHARD` | 16 | 48 GB × attempt | 400 / 100 GB | `n2-*,n2d-*,c2d-*,c3d-*` (AVX2) |
-| `MERGE_TO_CRAM` | 8 | 24 GB × attempt | 400 / 100 GB | any |
-| `SORT_INDEX` | 8 | 32 GB × attempt | 550 / 250 GB | any |
-| `BUILD_SAMPLESHEET`, `REGISTER_ANALYSIS` | 1 | 4 / 2 GB | default | any |
+| `ALIGN_TO_CRAM`, `ALIGN_SHARD` | 16 | 48 GB × attempt | 400 / 100 GB | `n2-standard-16`, `n2-highmem-16`, `n2-highmem-32` |
+| `MERGE_TO_CRAM` | 8 | 24 GB × attempt | 400 / 100 GB | `n2-standard-8`, `n2-highmem-8`, `n2-highmem-16` |
+| `SORT_INDEX` | 8 | 32 GB × attempt | 550 / 250 GB | `n2-highmem-8`, `n2-highmem-16`, `n2-highmem-16` |
+| `BUILD_SAMPLESHEET`, `REGISTER_ANALYSIS` | 1 | 4 / 2 GB | default | `e2-standard-2` |
 | `WRITE_RUN_RECORDS` | native `exec:`, in the Nextflow process | | | |
+
+**Every process names one exact `machineType`**, chosen by `task.attempt`, so an OOM retry lands on a
+bigger VM. Don't replace these with a list of types or a wildcard (`n2-*`). With
+`NXF_CLOUDINFO_ENABLED=false`, Nextflow records a task's machine type in the trace only when it was given
+an exact type. Seqera's cost estimates come from that record, so with a list or wildcard Google Batch
+still picks a VM, but the type isn't recorded and the task gets no cost estimate ([RISKS.md](RISKS.md)).
+Each type leaves memory headroom over the request, because a request equal to the VM's memory may not
+fit. The align processes use N2 because bwa-mem3 needs AVX2.
 
 ## Files
 
 ```
 main.nf                       params validation, run-records check, sample sheet, per-SG destinations, pre-flight, ALIGN, registration, run records
-nextflow.config               params, profiles (gcb, docker, test)
+nextflow.config               params, profiles (standard: Google Batch, docker, test)
 nextflow_schema.json          launch-form schema (main.nf does its own validation)
 conf/base.config              containers, resources, error strategy, per-SG resource labels, publishDir
 subworkflows/local/align/     ALIGN

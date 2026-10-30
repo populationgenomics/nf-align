@@ -65,8 +65,9 @@ Part B was decided during implementation and **has not been explicitly confirmed
     (index present, CRAM missing) still counts as a clash.
 12. **Run records live under `alignment_samplesheets/<arGuid>/` in the analysis dataset's bucket**, as
     you specified for the sample sheet, so `crams.csv` and `failed.csv` sit next to it.
-13. **The `gcb` container check only applies when the profile list includes `gcb`.** The `docker`
-    profile without images would fail at task launch instead.
+13. **Both containers are required in every profile.** `validateParams()` fails the run at launch if
+    `align_container` or `cpg_container` is unset. The `test` profile sets placeholder values, which a
+    stub run never pulls.
 14. **`dupblaster_extra_args` is one string, inserted verbatim into the dupblaster command line.** Bash
     splits and unquotes it, so it can hold several arguments, but quoting is the caller's job. A bare
     `--dupblaster_extra_args` (which arrives as `'true'`) fails parameter validation.
@@ -97,3 +98,7 @@ Part B was decided during implementation and **has not been explicitly confirmed
     fails the sample sheet step, even if it would otherwise have been skipped as the other sequencing
     type or as long-read.
 25. **`BUILD_SAMPLESHEET` is tagged with the access level**, now that it isn't given a project.
+26. **Every process names one exact machine type per attempt**, not a family or wildcard
+    (`n2-*,n2d-*,c2d-*,c3d-*`), which was the earlier design. A wildcard gives Google Batch more choice,
+    and so possibly cheaper or more available VMs. But Seqera's cost estimates need an exact type
+    ([RISKS #32](RISKS.md)), and an exact type per attempt also makes the OOM-retry VM sizes explicit.
