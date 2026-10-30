@@ -1,35 +1,49 @@
 /*
- * Alignment of one dataset and sequencing type: Metamist cohorts or SGs -> sample sheet -> bwa-mem3 + dupblaster
- * -> CRAM, published with workflow outputs and registered in Metamist. See DESIGN.md.
+ * Alignment of one sequencing type: Metamist cohorts or SGs, from any number of datasets -> sample sheet ->
+ * bwa-mem3 + dupblaster -> CRAM, published to and registered in each SG's own dataset. Run records go to the
+ * analysis dataset (params.dataset). See DESIGN.md.
  */
 
 include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
 include { REGISTER_ANALYSIS } from './modules/local/register_analysis'
+include { WRITE_RUN_RECORDS } from './modules/local/write_run_records'
 include { ALIGN } from './subworkflows/local/align'
 
 /*
- * Output paths, relative to outputDir. The output block publishes to these, and REGISTER_ANALYSIS
- * registers the same paths, so the two can't drift apart. Exomes live under exome/, as in cpg-flow.
+ * Output destinations. Each SG's are worked out here and carried in its meta: publishDir (conf/base.config),
+ * the pre-flight check and registration all read them from there, so they can't drift apart.
+ * Exomes live under exome/, as in cpg-flow.
  */
 def typePrefix() {
     params.sequencing_type == 'exome' ? 'exome/' : ''
 }
 
-def cramPath(meta) {
-    "${typePrefix()}cram/${meta.id}.cram"
+def metamistProject(ds) {
+    params.accessLevel == 'test' ? "${ds}-test" : ds
 }
 
-def metricsPath(meta) {
-    "${typePrefix()}qc/markduplicates_metrics/${meta.id}.markduplicates-metrics"
+// a dataset's bucket, or <output_root>/<ds> for local runs (absolute, whatever the launch dir)
+def datasetRoot(ds) {
+    params.output_root
+        ? uriOf(file(params.output_root).resolve(ds))
+        : "gs://cpg-${ds}-${params.accessLevel == 'test' ? 'test' : 'main'}"
 }
 
-// per-run records: the sample sheet, the CRAM index, and any SGs that failed
-def runPath(name) {
-    "alignment_samplesheets/${params.arGuid}/${name}"
+// per-run records, in the analysis dataset: the sample sheet, the CRAM index, and any SGs that failed
+def runDir() {
+    "${datasetRoot(params.dataset)}/alignment_samplesheets/${params.arGuid}"
 }
 
-def metamistProject() {
-    params.accessLevel == 'test' ? "${params.dataset}-test" : params.dataset
+// each file ALIGN_TO_CRAM and MERGE_TO_CRAM write, by name -> where it goes under the SG's output root.
+// Plain String keys: a GString key would never match the filename publishDir looks up
+def publishPaths(id) {
+    ["cram/${id}.cram", "cram/${id}.cram.crai", "qc/markduplicates_metrics/${id}.markduplicates-metrics"]
+        .collectEntries { rel -> [(rel.tokenize('/').last()): "${typePrefix()}${rel}".toString()] }
+}
+
+// the one place a published URI is built from meta
+def destination(meta, filename) {
+    "${meta.outRoot}/${meta.publish[filename.toString()]}".toString()
 }
 
 // gs://bucket/path for cloud paths (Path.toString() drops the scheme), a plain path locally
@@ -69,6 +83,25 @@ def validateParams() {
 }
 
 /*
+ * Fail before the sample sheet is built if this arGuid's run records already exist: publishDir would keep the
+ * old ones silently. arGuid is unique in production, but set by hand while testing. A resumed run finds its
+ * own records there, so -resume skips the check (ADR 0009).
+ */
+def checkNoRunRecords() {
+    if (workflow.resume) {
+        return
+    }
+    def existing = ['samplesheet.tsv', 'crams.csv', 'failed.csv']
+        .collect { name -> "${runDir()}/${name}" }
+        .findAll { uri -> file(uri).exists() }
+    if (existing) {
+        error(
+            "Run records for arGuid ${params.arGuid} already exist. Launch with a new --arGuid:\n  ${existing.join('\n  ')}"
+        )
+    }
+}
+
+/*
  * Outputs this session has passed the pre-flight check for. -resume keeps the session ID and needs the same
  * work dir, so a resumed run finds the claims of its earlier attempts here.
  */
@@ -77,8 +110,9 @@ def claimsFile() {
 }
 
 /*
- * Fail before any alignment if an output this run would publish already exists. overwrite = 'false'
- * would skip such a file silently, and registration would then record a file this run didn't write.
+ * Fail before any alignment if an output this run would publish already exists, in any SG's dataset.
+ * publishDir's overwrite: false leaves such a file in place silently, and registration would then record a
+ * file this run didn't write (ADR 0009).
  * Metamist-built sheets leave out SGs with a registered CRAM, so a clash is most likely an unregistered CRAM.
  * On -resume, outputs claimed by an earlier attempt of this session are expected, and are republished.
  */
@@ -86,8 +120,7 @@ def checkNoExistingOutputs(rows) {
     def outputs = rows
         .collect { meta, _r -> meta }
         .unique { meta -> meta.id }
-        .collectMany { meta -> [cramPath(meta), "${cramPath(meta)}.crai", metricsPath(meta)] }
-        .collect { rel -> uriOf(workflow.outputDir.resolve(rel)) }
+        .collectMany { meta -> meta.publish.keySet().collect { filename -> destination(meta, filename) } }
     def claims = claimsFile()
     def claimed = claims.exists() ? claims.readLines().toSet() : [] as Set
     def existing = outputs
@@ -111,8 +144,8 @@ def fail(message) {
 }
 
 workflow {
-    main:
     validateParams()
+    checkNoRunRecords()
     def kinds = ['fastq', 'fastq_ora', 'cram', 'bam', 'aligned']
     // matches {genome,exome}_realignment_shards in cpg-flow's config_template.toml
     // CLI params arrive as strings, and `1..'2'` would silently range over char codes
@@ -125,9 +158,8 @@ workflow {
     def ref_suffixes = ['fai', 'bwt.2bit.64', 'amb', 'ann', 'pac', 'alt']
     def reference = channel.value([file(params.ref_fasta), file(params.ref_fasta_dict), ref_suffixes.collect { ext -> file("${params.ref_fasta}.${ext}") }])
 
-    // there are three entrypoints: --cohorts, --sgids and --samplesheet. If a samplesheet is given as input, it
-    // shouldn't be written to the output folder. built_sheet vs. sheet differentiates the two cases
-    def built_sheet = channel.empty()
+    // there are three entrypoints: --cohorts, --sgids and --samplesheet. Only a sheet built here is published
+    // to the run records; a --samplesheet input isn't
     def sheet = channel.empty()
     if (params.samplesheet) {
         sheet = channel.fromPath(params.samplesheet, checkIfExists: true)
@@ -136,8 +168,7 @@ workflow {
         // one of the two is empty: SGs are discovered through cohorts, or queried directly
         def cohorts = params.cohorts ? idList(params.cohorts) : []
         def sgids = params.sgids ? idList(params.sgids) : []
-        built_sheet = BUILD_SAMPLESHEET(metamistProject(), params.sequencing_type, cohorts, sgids)
-        sheet = built_sheet
+        sheet = BUILD_SAMPLESHEET(params.accessLevel, params.sequencing_type, cohorts, sgids, runDir())
     }
 
     def rows = sheet
@@ -150,7 +181,20 @@ workflow {
             if (r.kind == 'cram' && !r.reads_ref) {
                 fail("${r.sg_id}: a cram row needs reads_ref, the reference the CRAM was written against")
             }
-            def meta = [id: r.sg_id, kind: r.kind, units: r.n_units.toInteger(), ref: r.reads_ref ?: params.ref_fasta]
+            // decides where the SG is published and registered, and which dataset its compute is billed to
+            if (!r.dataset) {
+                fail("${r.sg_id}: a row needs dataset, the dataset the SG belongs to")
+            }
+            def meta = [
+                id: r.sg_id,
+                kind: r.kind,
+                units: r.n_units.toInteger(),
+                ref: r.reads_ref ?: params.ref_fasta,
+                dataset: r.dataset,
+                project: metamistProject(r.dataset),
+                outRoot: datasetRoot(r.dataset),
+                publish: publishPaths(r.sg_id),
+            ]
             [meta, r]
         }
         .branch { meta, _r ->
@@ -170,8 +214,7 @@ workflow {
     def registered = channel.empty()
     if (register) {
         registered = REGISTER_ANALYSIS(
-            ALIGN.out.cram.map { meta, _cram, _crai -> [meta, uriOf(workflow.outputDir.resolve(cramPath(meta)))] },
-            metamistProject(),
+            ALIGN.out.cram.map { meta, _cram, _crai -> [meta, destination(meta, "${meta.id}.cram")] },
             params.sequencing_type,
             params.arGuid,
             params.ref_fasta,
@@ -180,51 +223,28 @@ workflow {
     }
 
     // with errorStrategy 'ignore' a failed SG doesn't fail the run, so name each one and the step it failed at
-    def failed = checked.map { meta, _r -> [meta.id, 'expected'] }
-        .mix(ALIGN.out.cram.map { meta, _cram, _crai -> [meta.id, 'aligned'] })
-        .mix(registered.map { meta -> [meta.id, 'registered'] })
-        .groupTuple()
-        .map { id, events ->
+    def failed = checked.map { meta, _r -> [meta.id, meta.dataset, 'expected'] }
+        .mix(ALIGN.out.cram.map { meta, _cram, _crai -> [meta.id, meta.dataset, 'aligned'] })
+        .mix(registered.map { meta -> [meta.id, meta.dataset, 'registered'] })
+        .groupTuple(by: [0, 1])
+        .map { id, dataset, events ->
             def failed_at = !('aligned' in events) ? 'align' : (register && !('registered' in events) ? 'register' : null)
-            [id: id, failed_at: failed_at]
+            [sg_id: id, dataset: dataset, failed_at: failed_at]
         }
         .filter { record -> record.failed_at }
     failed.toList().subscribe { records ->
         if (records) {
-            log.warn("${records.size()} SG(s) failed and were skipped (see ${runPath('failed.csv')}): " +
-                records.collect { record -> "${record.id} (${record.failed_at})" }.join(', '))
+            log.warn("${records.size()} SG(s) failed and were skipped (see ${runDir()}/failed.csv): " +
+                records.collect { record -> "${record.sg_id} (${record.failed_at})" }.join(', '))
         }
     }
 
-    publish:
-    samplesheet = built_sheet
-    crams = ALIGN.out.cram.map { meta, cram, crai -> [id: meta.id, cram: cram, crai: crai] }
-    markdup = ALIGN.out.markdup.map { meta, metrics -> [id: meta.id, metrics: metrics] }
-    failed = failed
-}
-
-// paths are relative to outputDir, which defaults to the dataset bucket (nextflow.config)
-output {
-    samplesheet {
-        path { sheet -> sheet >> runPath('samplesheet.tsv') }
+    // the published URIs of each newly aligned CRAM, as worked out in meta
+    def crams = ALIGN.out.cram.map { meta, _cram, _crai ->
+        [sg_id: meta.id, dataset: meta.dataset, cram: destination(meta, "${meta.id}.cram"), crai: destination(meta, "${meta.id}.cram.crai")]
     }
-    crams {
-        path { record ->
-            record.cram >> cramPath(record)
-            record.crai >> "${cramPath(record)}.crai"
-        }
-        index {
-            path runPath('crams.csv')
-            header true
-        }
-    }
-    markdup {
-        path { record -> record.metrics >> metricsPath(record) }
-    }
-    failed {
-        index {
-            path runPath('failed.csv')
-            header true
-        }
-    }
+    // sorted, so the records don't depend on task completion order and -resume finds the task cached.
+    // Each emits [] when nothing arrives, so both files are always written
+    def by_sg = { a, b -> a.sg_id <=> b.sg_id }
+    WRITE_RUN_RECORDS(crams.toSortedList(by_sg), failed.toSortedList(by_sg), runDir())
 }

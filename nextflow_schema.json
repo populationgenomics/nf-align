@@ -12,7 +12,7 @@
             "properties": {
                 "dataset": {
                     "type": "string",
-                    "description": "Metamist dataset (project) name, without any -test suffix. Sets the output bucket and the registration project."
+                    "description": "The analysis dataset (no -test suffix): the run is launched under it and pays for it, and its bucket holds the run records. Each SG is published to and registered in its own dataset, which can differ."
                 },
                 "sequencing_type": {
                     "type": "string",
@@ -23,7 +23,7 @@
                     "type": "string",
                     "enum": ["full", "standard", "test"],
                     "default": "standard",
-                    "description": "full and standard are equivalent. test queries and registers in <dataset>-test and writes to gs://cpg-<dataset>-test."
+                    "description": "Applies to the whole run. full and standard are equivalent: every SG must be in a production project, and is published to gs://cpg-<ds>-main. test: every SG must be in a <ds>-test project, and is registered there and published to gs://cpg-<ds>-test."
                 },
                 "arGuid": {
                     "type": "string",
@@ -35,12 +35,16 @@
                 },
                 "sgids": {
                     "type": "string",
-                    "description": "Comma-separated Metamist sequencing group IDs, queried directly instead of through cohorts. Each must be a short-read SG of sequencing_type in this project. Exactly one of cohorts, sgids or samplesheet."
+                    "description": "Comma-separated Metamist sequencing group IDs, queried directly instead of through cohorts. Each must be a short-read SG of sequencing_type, and can be in any project at the run's access level. Exactly one of cohorts, sgids or samplesheet."
                 },
                 "samplesheet": {
                     "type": "string",
                     "format": "file-path",
-                    "description": "A prepared sample sheet TSV, skipping the Metamist query. Exactly one of cohorts, sgids or samplesheet."
+                    "description": "A prepared sample sheet TSV, with a dataset column, skipping the Metamist query. Exactly one of cohorts, sgids or samplesheet."
+                },
+                "output_root": {
+                    "type": "string",
+                    "description": "For local and test runs: publish each dataset's outputs under <output_root>/<dataset>/ instead of its bucket."
                 }
             }
         },

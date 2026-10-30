@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 
 """
-Build the alignment sample sheet for one Metamist project and sequencing type, from a list of cohorts or a
-list of sequencing group IDs.
+Build the alignment sample sheet for one sequencing type, from a list of cohorts or a list of sequencing
+group IDs. The SGs can come from any number of Metamist projects, and each row records its SG's dataset.
 
 Run by the BUILD_SAMPLESHEET process at the start of main.nf (see DESIGN.md). The input rules mirror
-cpg-flow (cpg_flow.inputs, cpg_flow.metamist), restricted to a single project:
-- cohorts are looked up within the project; missing, inactive and empty cohorts fail the run
-- sequencing groups are de-duplicated across cohorts, and must belong to the project
+cpg-flow (cpg_flow.inputs, cpg_flow.metamist):
+- cohorts are looked up across projects; missing (or not visible to this run), inactive and empty cohorts
+  fail the run
+- sequencing groups are de-duplicated across cohorts
+- an SG's dataset is its sample's project, without any -test suffix. Its project must match the access
+  level: a -test project at access level test, and any other project otherwise. Mismatches fail the run
 - SGs from cohorts that aren't short-read, or aren't of the requested sequencing type, are skipped with a warning
-- SG IDs are looked up within the project; missing SGs, and SGs that aren't short-read of the requested
-  sequencing type, fail the run, as they were asked for by name
+- SG IDs are looked up across projects; missing SGs (or ones not visible to this run), and SGs that aren't
+  short-read of the requested sequencing type, fail the run, as they were asked for by name
 - reads are combined across an SG's assays, each assay contributing one FASTQ pair (or the CRAM/BAM)
 - an SG with a completed, active 'cram' analysis is already aligned, and gets one 'aligned' row
 - read locations are used exactly as recorded in Metamist
 
-    build_samplesheet.py --project <dataset>[-test] --sequencing-type genome \\
+    build_samplesheet.py --access-level standard --sequencing-type genome \\
         --cohorts COH0001 COH0002 --output samplesheet.tsv
-    build_samplesheet.py --project <dataset>[-test] --sequencing-type genome \\
+    build_samplesheet.py --access-level test --sequencing-type genome \\
         --sgids CPG0001 CPG0002 --output samplesheet.tsv
 """
 
@@ -30,8 +33,9 @@ from metamist.graphql import gql, query
 
 logger = logging.getLogger(__name__)
 
-COLUMNS = ['sg_id', 'kind', 'n_units', 'unit', 'r1', 'r2', 'reads', 'reads_index', 'reads_ref']
+COLUMNS = ['sg_id', 'dataset', 'kind', 'n_units', 'unit', 'r1', 'r2', 'reads', 'reads_index', 'reads_ref']
 SEQUENCING_TYPES = {'genome', 'exome'}
+ACCESS_LEVELS = {'full', 'standard', 'test'}
 
 # the SG fields both queries fetch: assay metadata, and any existing CRAM analyses
 SG_FIELDS = """
@@ -54,17 +58,15 @@ fragment SgFields on GraphQLSequencingGroup {
 }
 """
 
-# one round trip: cohort status, and each cohort's SGs
+# one round trip: cohort status, and each cohort's SGs. Top-level, so the cohorts can be in any project
 COHORTS_QUERY = (
     """
-query BuildSamplesheetFromCohorts($project: String!, $cohorts: [String!]!) {
-    project(name: $project) {
-        cohorts(id: {in_: $cohorts}) {
-            id
-            status
-            sequencingGroups {
-                ...SgFields
-            }
+query BuildSamplesheetFromCohorts($cohorts: [String!]!) {
+    cohorts(id: {in_: $cohorts}) {
+        id
+        status
+        sequencingGroups {
+            ...SgFields
         }
     }
 }
@@ -72,14 +74,12 @@ query BuildSamplesheetFromCohorts($project: String!, $cohorts: [String!]!) {
     + SG_FIELDS
 )
 
-# one round trip: the requested SGs, queried directly
+# one round trip: the requested SGs, queried directly, in any project
 SGS_QUERY = (
     """
-query BuildSamplesheetFromSgs($project: String!, $sgids: [String!]!) {
-    project(name: $project) {
-        sequencingGroups(id: {in_: $sgids}) {
-            ...SgFields
-        }
+query BuildSamplesheetFromSgs($sgids: [String!]!) {
+    sequencingGroups(id: {in_: $sgids}) {
+        ...SgFields
     }
 }
 """
@@ -91,29 +91,29 @@ class SamplesheetError(Exception):
     """Invalid cohorts, sequencing group IDs, or sequencing group metadata."""
 
 
-def fetch_cohort_sgs(project: str, cohort_ids: list[str]) -> list[dict]:
+def fetch_cohort_sgs(cohort_ids: list[str]) -> list[dict]:
     """
-    The SGs of the project's cohorts, in cohort order and possibly repeated. Fails on any cohort that is
-    missing (from this project), inactive, or empty.
+    The SGs of these cohorts, in cohort order and possibly repeated. Fails on any cohort that is missing
+    (or not visible to this run's credentials), inactive, or empty.
     """
-    cohorts = query(gql(COHORTS_QUERY), variables={'project': project, 'cohorts': cohort_ids})['project']['cohorts']
+    cohorts = query(gql(COHORTS_QUERY), variables={'cohorts': cohort_ids})['cohorts']
 
     missing = sorted(set(cohort_ids) - {cohort['id'] for cohort in cohorts})
     inactive = sorted(cohort['id'] for cohort in cohorts if cohort['status'] != 'active')
     empty = sorted(cohort['id'] for cohort in cohorts if not cohort['sequencingGroups'])
     if missing or inactive or empty:
         raise SamplesheetError(
-            f'Unusable cohorts in {project} - missing: {missing}, inactive: {inactive}, empty: {empty}',
+            f'Unusable cohorts - missing or not visible to this run: {missing}, inactive: {inactive}, empty: {empty}',
         )
     return [sg for cohort in cohorts for sg in cohort['sequencingGroups']]
 
 
-def fetch_sgs(project: str, sg_ids: list[str], sequencing_type: str) -> list[dict]:
+def fetch_sgs(sg_ids: list[str], sequencing_type: str) -> list[dict]:
     """
-    The project's SGs with these IDs. Each was asked for by name, so one that is missing (from this project),
-    or isn't short-read of this sequencing type, fails the run rather than being skipped.
+    The SGs with these IDs. Each was asked for by name, so one that is missing (or not visible to this run's
+    credentials), or isn't short-read of this sequencing type, fails the run rather than being skipped.
     """
-    sgs = query(gql(SGS_QUERY), variables={'project': project, 'sgids': sg_ids})['project']['sequencingGroups']
+    sgs = query(gql(SGS_QUERY), variables={'sgids': sg_ids})['sequencingGroups']
 
     missing = sorted(set(sg_ids) - {sg['id'] for sg in sgs})
     wrong_type = sorted(
@@ -123,7 +123,8 @@ def fetch_sgs(project: str, sg_ids: list[str], sequencing_type: str) -> list[dic
     )
     if missing or wrong_type:
         raise SamplesheetError(
-            f'Unusable SGs in {project} - missing: {missing}, not short-read {sequencing_type}: {wrong_type}',
+            f'Unusable SGs - missing or not visible to this run: {missing}, '
+            f'not short-read {sequencing_type}: {wrong_type}',
         )
     return sgs
 
@@ -218,8 +219,11 @@ def rows_for(sg: dict) -> list[dict]:
     raise SamplesheetError(f'{sg_id}: unsupported reads_type {meta.get("reads_type")!r}')
 
 
-def build_rows(sgs: list[dict], project: str, sequencing_type: str) -> list[dict]:
-    """Rows for every in-scope SG, each SG once. Reports every bad SG at once, not one per run."""
+def build_rows(sgs: list[dict], access_level: str, sequencing_type: str) -> list[dict]:
+    """
+    Rows for every in-scope SG, each SG once, with the SG's dataset. Reports every bad SG at once, not one
+    per run.
+    """
     rows: list[dict] = []
     seen: set[str] = set()
     errors: list[str] = []
@@ -227,8 +231,10 @@ def build_rows(sgs: list[dict], project: str, sequencing_type: str) -> list[dict
         if sg['id'] in seen:
             continue
         seen.add(sg['id'])
-        if (sg_project := sg['sample']['project']['name']) != project:
-            errors.append(f'{sg["id"]}: belongs to project {sg_project}, not {project}')
+        # a test run must never publish to a -main bucket, nor a full run to a -test one
+        project = sg['sample']['project']['name']
+        if project.endswith('-test') != (access_level == 'test'):
+            errors.append(f'{sg["id"]}: project {project} does not match access level {access_level}')
             continue
         if sg['technology'] != 'short-read' or sg['type'] != sequencing_type:
             logger.warning(
@@ -236,7 +242,7 @@ def build_rows(sgs: list[dict], project: str, sequencing_type: str) -> list[dict
             )
             continue
         try:
-            rows.extend(rows_for(sg))
+            rows.extend({'dataset': project.removesuffix('-test')} | row for row in rows_for(sg))
         except SamplesheetError as error:
             errors.append(str(error))
     if errors:
@@ -254,31 +260,40 @@ def write_sheet(rows: list[dict], path: str) -> None:
 
 
 def main(
-    project: str,
+    access_level: str,
     sequencing_type: str,
     cohort_ids: list[str] | None,
     sg_ids: list[str] | None,
     output: str,
 ) -> None:
     if cohort_ids:
-        sgs = fetch_cohort_sgs(project, sorted(set(cohort_ids)))
+        sgs = fetch_cohort_sgs(sorted(set(cohort_ids)))
     else:
-        sgs = fetch_sgs(project, sorted(set(sg_ids or [])), sequencing_type)
-    rows = build_rows(sgs, project, sequencing_type)
+        sgs = fetch_sgs(sorted(set(sg_ids or [])), sequencing_type)
+    rows = build_rows(sgs, access_level, sequencing_type)
     write_sheet(rows, output)
     n_sgs = len({row['sg_id'] for row in rows})
+    n_datasets = len({row['dataset'] for row in rows})
     n_aligned = sum(row['kind'] == 'aligned' for row in rows)
-    logger.info(f'{project} {sequencing_type}: {n_sgs} SGs ({n_aligned} already aligned), {len(rows)} rows -> {output}')
+    logger.info(
+        f'{sequencing_type} at access level {access_level}: {n_sgs} SGs from {n_datasets} dataset(s) '
+        f'({n_aligned} already aligned), {len(rows)} rows -> {output}',
+    )
 
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument('--project', required=True, help='Metamist project: the dataset, or <dataset>-test')
+    parser.add_argument(
+        '--access-level',
+        required=True,
+        choices=sorted(ACCESS_LEVELS),
+        help='test: every SG must be in a <dataset>-test project; full or standard: none may be',
+    )
     parser.add_argument('--sequencing-type', required=True, choices=sorted(SEQUENCING_TYPES))
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument('--cohorts', nargs='+', help='Metamist cohort IDs')
     inputs.add_argument('--sgids', nargs='+', help='Metamist sequencing group IDs, queried directly')
     parser.add_argument('--output', required=True, help='Sample sheet TSV to write')
     args = parser.parse_args()
-    main(args.project, args.sequencing_type, args.cohorts, args.sgids, args.output)
+    main(args.access_level, args.sequencing_type, args.cohorts, args.sgids, args.output)

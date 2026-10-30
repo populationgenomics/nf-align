@@ -1,6 +1,7 @@
 """Offline `nextflow run -stub` checks of main.nf's wiring: branching by input kind, lane/shard fan-out and
-merges, published paths, registration, the pre-flight clash check and -resume, and the failed-SG report.
-Placeholder files stand in for data, and the tests are skipped when nextflow isn't on PATH."""
+merges, per-dataset published paths, registration, the run-records and pre-flight clash checks and -resume,
+and the run records. The SGs span two datasets (conftest.cohort_sgs). Placeholder files stand in for data,
+and the tests are skipped when nextflow isn't on PATH."""
 
 import csv
 import shutil
@@ -9,13 +10,14 @@ from pathlib import Path
 
 import pytest
 from build_samplesheet import build_rows, write_sheet
-from conftest import PROJECT, touch
+from conftest import OTHER, PROJECT, touch
 
 pytestmark = pytest.mark.skipif(shutil.which('nextflow') is None, reason='nextflow not installed')
 
 MAIN_NF = Path(__file__).parents[1] / 'main.nf'
 NEW = {'CPG1', 'CPG2', 'CPG3', 'CPG4', 'CPG6'}  # CPG5 already has a CRAM
-RUN_DIR = Path('alignment_samplesheets/local-test')
+NEW_BY_DATASET = {PROJECT: {'CPG1', 'CPG2', 'CPG3'}, OTHER: {'CPG4', 'CPG6'}}
+DATASET = {sg_id: ds for ds, sg_ids in NEW_BY_DATASET.items() for sg_id in sg_ids}
 
 
 def read_tsv(path: Path, sep: str = '\t') -> list[dict]:
@@ -23,11 +25,27 @@ def read_tsv(path: Path, sep: str = '\t') -> list[dict]:
         return list(csv.DictReader(handle, delimiter=sep))
 
 
+# each dataset's outputs are under <output_root>/<ds>, and the run records under the analysis dataset's
+def cram_dir(out: Path, ds: str, prefix: str = '') -> Path:
+    return out / ds / prefix / 'cram'
+
+
+def metrics_dir(out: Path, ds: str, prefix: str = '') -> Path:
+    return out / ds / prefix / 'qc' / 'markduplicates_metrics'
+
+
+def run_dir(out: Path, ar_guid: str = 'local-test') -> Path:
+    return out / PROJECT / 'alignment_samplesheets' / ar_guid
+
+
 @pytest.fixture
 def run(tmp_path, cohort_sgs):
-    """Run main.nf in stub mode over a sheet with one SG per input kind; returns (result, outputDir, trace rows)."""
+    """
+    Run main.nf in stub mode over a sheet with one SG per input kind, across two datasets, with PROJECT as the
+    analysis dataset; returns (result, output_root, trace rows).
+    """
     sheet = tmp_path / 'sheet.tsv'
-    write_sheet(build_rows(cohort_sgs, PROJECT, 'genome'), str(sheet))
+    write_sheet(build_rows(cohort_sgs, 'standard', 'genome'), str(sheet))
     refs = tmp_path / 'refs'
     for name in ['ref.fasta', 'ref.fasta.fai', *(f'ref.fasta.{ext}' for ext in ['bwt.2bit.64', 'amb', 'ann', 'pac'])]:
         touch(refs / name)
@@ -38,6 +56,7 @@ def run(tmp_path, cohort_sgs):
         inputs: tuple = ('--samplesheet', str(sheet)),
         reference: tuple = ('--ref_fasta', str(refs / 'ref.fasta')),
         profile: str = 'test',
+        ar_guid: str = 'local-test',
     ):
         out = tmp_path / 'results'
         trace = tmp_path / 'trace.txt'
@@ -46,9 +65,10 @@ def run(tmp_path, cohort_sgs):
             [
                 'nextflow', 'run', str(MAIN_NF), '-stub', '-profile', profile,
                 '-with-trace', str(trace),
-                '-output-dir', str(out),
                 *inputs,
+                '--output_root', str(out),
                 '--dataset', PROJECT,
+                '--arGuid', ar_guid,
                 '--sequencing_type', sequencing_type,
                 '--realignment_shards', '2',
                 *reference,
@@ -70,6 +90,12 @@ def task_names(tasks: list[dict], process: str) -> set[str]:
     return {t['name'].split('(')[1].rstrip(')') for t in tasks if t['name'].split(' ')[0].endswith(process)}
 
 
+def task_dir(tasks: list[dict], tmp_path: Path, name: str) -> Path:
+    """The work dir of the task with this name, e.g. 'REGISTER_ANALYSIS (CPG1)'."""
+    workdir = next(t for t in tasks if t['name'].startswith(name))['hash']
+    return next((tmp_path / 'work').glob(f'{workdir}*'))
+
+
 def test_every_input_kind_is_aligned_published_and_registered(run):
     result, out, tasks = run('--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
@@ -81,35 +107,54 @@ def test_every_input_kind_is_aligned_published_and_registered(run):
     assert task_names(tasks, 'SORT_INDEX') == {'CPG4'}  # the unindexed BAM
     assert task_names(tasks, 'REGISTER_ANALYSIS') == NEW
 
-    assert {p.name for p in (out / 'cram').iterdir()} == {f'{s}.cram{ext}' for s in NEW for ext in ['', '.crai']}
-    assert {p.name for p in (out / 'qc' / 'markduplicates_metrics').iterdir()} == {
-        f'{s}.markduplicates-metrics' for s in NEW
-    }
-    index = read_tsv(out / RUN_DIR / 'crams.csv', sep=',')
-    assert {r['id'] for r in index} == NEW
-    assert all(r['cram'] == str(out / 'cram' / f'{r["id"]}.cram') for r in index)
-    assert not read_tsv(out / RUN_DIR / 'failed.csv', sep=',')
+    # each SG goes to its own dataset
+    for ds, sg_ids in NEW_BY_DATASET.items():
+        crams = {f'{s}.cram{ext}' for s in sg_ids for ext in ['', '.crai']}
+        assert {p.name for p in cram_dir(out, ds).iterdir()} == crams
+        assert {p.name for p in metrics_dir(out, ds).iterdir()} == {f'{s}.markduplicates-metrics' for s in sg_ids}
+
+    # the run records go to the analysis dataset only
+    index = read_tsv(run_dir(out) / 'crams.csv', sep=',')
+    assert list(index[0]) == ['sg_id', 'dataset', 'cram', 'crai']
+    assert {(r['sg_id'], r['dataset']) for r in index} == {(s, DATASET[s]) for s in NEW}
+    for r in index:
+        assert r['cram'] == str(cram_dir(out, r['dataset']) / f'{r["sg_id"]}.cram')
+        assert r['crai'] == f'{r["cram"]}.crai'
+    assert (run_dir(out) / 'failed.csv').read_text() == 'sg_id,dataset,failed_at\n'
+    assert not (out / OTHER / 'alignment_samplesheets').exists()
     # a sheet passed with --samplesheet isn't republished
-    assert not (out / RUN_DIR / 'samplesheet.tsv').exists()
+    assert not (run_dir(out) / 'samplesheet.tsv').exists()
 
 
-def test_registration_uses_the_published_path(run, tmp_path):
+def test_registration_uses_the_published_path_and_the_sgs_project(run, tmp_path):
     result, out, tasks = run('--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
-    workdir = next(t for t in tasks if t['name'].startswith('REGISTER_ANALYSIS (CPG1)'))['hash']
-    command = next((tmp_path / 'work').glob(f'{workdir}*/.command.out')).read_text()
-    assert f'--output {out}/cram/CPG1.cram ' in command
-    assert f'--secondary index={out}/cram/CPG1.cram.crai ' in command
-    assert '--project ds ' in command
-    assert 'ar-guid=local-test' in command
+    for sg_id, ds in [('CPG1', PROJECT), ('CPG4', OTHER)]:
+        command = (task_dir(tasks, tmp_path, f'REGISTER_ANALYSIS ({sg_id})') / '.command.out').read_text()
+        cram = cram_dir(out, ds) / f'{sg_id}.cram'
+        assert f'--output {cram} ' in command
+        assert f'--secondary index={cram}.crai ' in command
+        assert f'--project {ds} ' in command
+        assert 'ar-guid=local-test' in command
+
+
+def test_test_access_level_registers_in_test_projects(run, tmp_path):
+    result, out, tasks = run('--accessLevel', 'test', '--register', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    for sg_id, ds in [('CPG1', PROJECT), ('CPG4', OTHER)]:
+        command = (task_dir(tasks, tmp_path, f'REGISTER_ANALYSIS ({sg_id})') / '.command.out').read_text()
+        assert f'--project {ds}-test ' in command
+        # output_root decides the location, not the access level
+        assert f'--output {cram_dir(out, ds) / f"{sg_id}.cram"} ' in command
 
 
 def test_exomes_are_published_under_exome(run):
     result, out, _tasks = run(sequencing_type='exome')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert {p.name for p in (out / 'exome' / 'cram').glob('*.cram')} == {f'{s}.cram' for s in NEW}
-    assert len(list((out / 'exome' / 'qc' / 'markduplicates_metrics').iterdir())) == len(NEW)
-    assert not (out / 'cram').exists()
+    for ds, sg_ids in NEW_BY_DATASET.items():
+        assert {p.name for p in cram_dir(out, ds, 'exome').glob('*.cram')} == {f'{s}.cram' for s in sg_ids}
+        assert len(list(metrics_dir(out, ds, 'exome').iterdir())) == len(sg_ids)
+        assert not cram_dir(out, ds).exists()
 
 
 def test_failed_sgs_are_dropped_and_reported(run, tmp_path):
@@ -126,52 +171,72 @@ def test_failed_sgs_are_dropped_and_reported(run, tmp_path):
     # ignored failures don't fail the run; they're listed instead
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'CPG3' not in task_names(tasks, 'MERGE_TO_CRAM')  # never merged from the surviving shard
-    assert not (out / 'cram' / 'CPG3.cram').exists()
-    assert (out / 'cram' / 'CPG6.cram').exists()
-    failed = read_tsv(out / RUN_DIR / 'failed.csv', sep=',')
-    assert sorted((r['id'], r['failed_at']) for r in failed) == [('CPG3', 'align'), ('CPG6', 'register')]
+    assert not (cram_dir(out, PROJECT) / 'CPG3.cram').exists()
+    assert (cram_dir(out, OTHER) / 'CPG6.cram').exists()
+    failed = read_tsv(run_dir(out) / 'failed.csv', sep=',')
+    assert [(r['sg_id'], r['dataset'], r['failed_at']) for r in failed] == [
+        ('CPG3', PROJECT, 'align'),
+        ('CPG6', OTHER, 'register'),
+    ]
+    assert {r['sg_id'] for r in read_tsv(run_dir(out) / 'crams.csv', sep=',')} == NEW - {'CPG3'}
     assert '2 SG(s) failed and were skipped' in result.stdout + result.stderr
 
 
 def test_existing_outputs_fail_the_run_before_any_alignment(run):
     _result, out, _tasks = run()
-    touch(out / 'qc' / 'markduplicates_metrics' / 'CPG9.markduplicates-metrics')  # unrelated, ignored
-    (out / 'cram' / 'CPG2.cram').unlink()  # one SG partly present still clashes on its index
+    touch(metrics_dir(out, OTHER) / 'CPG9.markduplicates-metrics')  # unrelated, ignored
+    (cram_dir(out, OTHER) / 'CPG4.cram').unlink()  # one SG partly present still clashes on its index
 
-    result, _out, tasks = run()
+    # a new arGuid, so the run-records check passes
+    result, _out, tasks = run(ar_guid='second')
     assert result.returncode != 0
     # log.warn/log.error go to stderr, or to stdout when nextflow detects an AI agent (e.g. CLAUDECODE is set)
     console = result.stdout + result.stderr
-    assert '14 output(s) already exist' in console
-    assert f'{out}/cram/CPG2.cram.crai' in console
+    assert '14 output(s) already exist' in console  # 5 SGs x 3 outputs, less the deleted CRAM
+    assert f'{cram_dir(out, OTHER)}/CPG4.cram.crai' in console
+    assert f'{cram_dir(out, PROJECT)}/CPG1.cram' in console
     assert 'CPG9' not in console
     assert not [t for t in tasks if t['status'] == 'COMPLETED']
+
+
+def test_reusing_an_ar_guid_fails_before_any_task(run):
+    result, out, _tasks = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    result, _out, tasks = run()
+    assert result.returncode != 0
+    console = result.stdout + result.stderr
+    assert 'Run records for arGuid local-test already exist' in console
+    assert f'{run_dir(out)}/crams.csv' in console
+    assert not tasks
 
 
 def test_resume_republishes_outputs_this_session_claimed(run):
     result, _out, _tasks = run()
     assert result.returncode == 0, result.stdout + result.stderr
 
-    # the outputs exist, but this session's earlier attempt claimed them at the pre-flight check
+    # the outputs and run records exist, but this session's earlier attempt claimed the outputs at the
+    # pre-flight check, and -resume skips the run-records check
     result, out, tasks = run('-resume')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert tasks
+    assert any(t['name'] == 'WRITE_RUN_RECORDS' for t in tasks)
     assert {t['status'] for t in tasks} == {'CACHED'}
-    assert {p.name for p in (out / 'cram').glob('*.cram')} == {f'{s}.cram' for s in NEW}
+    for ds, sg_ids in NEW_BY_DATASET.items():
+        assert {p.name for p in cram_dir(out, ds).glob('*.cram')} == {f'{s}.cram' for s in sg_ids}
 
 
 def test_cohorts_mode_publishes_the_built_sheet(run):
     result, out, tasks = run(inputs=('--cohorts', 'COH1,COH2'))
     assert result.returncode == 0, result.stdout + result.stderr
-    assert task_names(tasks, 'BUILD_SAMPLESHEET') == {'ds'}
-    assert (out / RUN_DIR / 'samplesheet.tsv').exists()
+    assert task_names(tasks, 'BUILD_SAMPLESHEET') == {'standard'}
+    assert (run_dir(out) / 'samplesheet.tsv').exists()
 
 
 def test_sgids_mode_publishes_the_built_sheet(run):
     result, out, tasks = run(inputs=('--sgids', 'CPG1,CPG2'))
     assert result.returncode == 0, result.stdout + result.stderr
-    assert task_names(tasks, 'BUILD_SAMPLESHEET') == {'ds'}
-    assert (out / RUN_DIR / 'samplesheet.tsv').exists()
+    assert task_names(tasks, 'BUILD_SAMPLESHEET') == {'standard'}
+    assert (run_dir(out) / 'samplesheet.tsv').exists()
 
 
 @pytest.mark.parametrize(
@@ -202,6 +267,35 @@ def test_cram_row_without_a_reference_fails_early(run, tmp_path):
     assert result.returncode != 0
     assert 'CPG3: a cram row needs reads_ref' in result.stdout + result.stderr
     assert not [t for t in tasks if t['status'] == 'COMPLETED']
+
+
+def test_row_without_a_dataset_fails_early(run, tmp_path):
+    sheet = tmp_path / 'sheet.tsv'
+    rows = read_tsv(sheet)
+    rows[0]['dataset'] = ''
+    write_sheet(rows, str(sheet))
+    result, _out, tasks = run()
+    assert result.returncode != 0
+    assert 'CPG1: a row needs dataset, the dataset the SG belongs to' in result.stdout + result.stderr
+    assert not [t for t in tasks if t['status'] == 'COMPLETED']
+
+
+def test_per_sg_tasks_are_labelled_with_the_sgs_dataset(run, tmp_path):
+    inject = tmp_path / 'labels.config'
+    inject.write_text(
+        'process {\n'
+        "    withName: 'SORT_INDEX|ALIGN_TO_CRAM|ALIGN_SHARD|MERGE_TO_CRAM|REGISTER_ANALYSIS' {\n"
+        '        beforeScript = { "echo LABEL=${task.resourceLabels.dataset}" }\n'
+        '    }\n'
+        '}\n',
+    )
+    result, _out, tasks = run('-c', str(inject), '--register', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    labelled = [t for t in tasks if not t['name'].startswith('WRITE_RUN_RECORDS')]
+    assert len(labelled) == 17  # SORT_INDEX 1, ALIGN_SHARD 6, MERGE_TO_CRAM 3, ALIGN_TO_CRAM 2, REGISTER_ANALYSIS 5
+    for t in labelled:
+        sg_id = t['name'].split('(')[1].rstrip(')').split(':')[0]
+        assert f'LABEL={DATASET[sg_id]}' in (task_dir(tasks, tmp_path, t['name']) / '.command.out').read_text()
 
 
 def test_workflow_needs_both_containers(run, tmp_path):
