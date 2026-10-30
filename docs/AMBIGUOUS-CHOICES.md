@@ -16,7 +16,14 @@ Part B was decided during implementation and **has not been explicitly confirmed
 | dupblaster sequencing-duplicate detection left on | off by default | richer metrics; it fails loudly on odd read names, with an override available |
 | dupblaster's clamp exit (code 1) treated as failure | parse stderr and accept it | shouldn't happen with short reads; parsing stderr is fragile |
 | Metrics are published but not registered | register them as their own analysis type | nothing reads them from Metamist yet |
-| `outputDir` derived from `dataset` + `accessLevel` | the launcher always passes `-output-dir` | the bucket can't disagree with the access level |
+| Each SG's bucket derived from its dataset + `accessLevel`; `output_root` only for local/test runs | the launcher passes an output location | the bucket can't disagree with the SG or the access level |
+| An SG's dataset is its sample's project ([ADR 0008](adr/0008-sgs-from-several-datasets-published-with-publishdir.md)) | the project of the cohort that brought it in | the data belongs with its sample, whoever curated the cohort |
+| No allow-list of datasets a run may write to | a `--datasets` allow-list | the SG's project picks the bucket, so a wrong cohort can't send data to the wrong place |
+| An SG at the wrong access level fails the sample sheet step | skip it with a warning | a test run must never write to a `-main` bucket, and a full run never to a `-test` one |
+| Still one sequencing type per run | per-SG `exome/` prefix, mixed runs | resources, shard defaults and genotyping depend on it; a separate change if ever wanted |
+| `publishDir` for everything, including run records | keep `output {}` for run records | one publishing mechanism, not two |
+| `-resume` skips the run-records check | record run records in the claims file | simpler, and a resume keeps its `arGuid` by definition |
+| The concurrent-run gap is accepted ([ADR 0009](adr/0009-never-overwrite-preflight-and-publishdir-no-overwrite.md)) | re-check existence just before each publish | a small race would remain anyway, and it adds a moving part |
 | No memory watchdog for OOM | monitor RSS and kill early | `pipefail` + record checks + OOM retry already cover the header-only failure mode |
 | bwa-mem3 index built outside the pipeline | an optional `BWA_MEM3_INDEX` process | needs ~76 GB once; not per-run work |
 
@@ -26,17 +33,21 @@ Part B was decided during implementation and **has not been explicitly confirmed
    dupblaster at up to 5 GB and the sort buffers, comes to about 38 GB. A 16-vCPU standard machine has
    64 GB, so in practice this shouldn't cost more than the 32 GB request would have.
    `MERGE_TO_CRAM` asks for 24 GB (8 CPUs, so it fits an `*-standard-8`).
-2. **The index files are CSV, not TSV.** Nextflow only accepts `.csv`, `.json` or `.yaml` for workflow
-   output index files, so the run records are `crams.csv` and `failed.csv`. The sample sheet itself is
-   still `samplesheet.tsv`.
+2. **The index files are CSV, not TSV.** Originally this was because Nextflow only accepts `.csv`,
+   `.json` or `.yaml` for workflow output index files. `WRITE_RUN_RECORDS` could now write TSV, but the
+   names `crams.csv` and `failed.csv` are kept so anything that already reads them keeps working. The
+   sample sheet itself is still `samplesheet.tsv`.
 3. **`failed.csv` has a `failed_at` column** (`align` or `register`), so a failed registration isn't
    confused with a failed alignment.
 4. **Registration is retried once, then ignored** (and reported in `failed.csv`).
 5. **`BUILD_SAMPLESHEET` fails the run if no SG is in scope** (for example, every SG is the other
    sequencing type), rather than doing an empty run. A sheet where every SG is already aligned is still
    a valid run that does nothing.
-6. **The Metamist project name (`<dataset>[-test]`) is worked out in `main.nf`** (`metamistProject()`)
-   and passed to both the sheet builder and registration, so the Python script has no `accessLevel` logic.
+6. **The sheet builder takes `--access-level`** (agreed in the multi-dataset design). It rejects SGs
+   whose project doesn't match it, and writes each SG's `dataset` without `-test`. `main.nf` works out
+   each SG's Metamist project for registration from `meta.dataset` and `accessLevel`. This replaces the
+   earlier design, where `main.nf` passed a single project name and the script had no `accessLevel`
+   logic.
 7. **Registration `--meta` has `sequencing_type` and `ar-guid` only.** A `source=nf-align` key was
    suggested early in the interview but wasn't in the final summary, so it's left out. It's one line to
    add in `modules/local/register_analysis/main.nf`.
@@ -52,8 +63,8 @@ Part B was decided during implementation and **has not been explicitly confirmed
     disk, as the port did, needs ~200 GB for a 30x genome and delays alignment until it finishes.
 11. **The pre-flight check also covers `.crai` and metrics**, not just the CRAM. A half-published SG
     (index present, CRAM missing) still counts as a clash.
-12. **Run records live under `alignment_samplesheets/<arGuid>/`**, as you specified for the sample
-    sheet, so `crams.csv` and `failed.csv` sit next to it.
+12. **Run records live under `alignment_samplesheets/<arGuid>/` in the analysis dataset's bucket**, as
+    you specified for the sample sheet, so `crams.csv` and `failed.csv` sit next to it.
 13. **The `gcb` container check only applies when the profile list includes `gcb`.** The `docker`
     profile without images would fail at task launch instead.
 14. **`dupblaster_extra_args` is one string, inserted verbatim into the dupblaster command line.** Bash
@@ -68,3 +79,9 @@ Part B was decided during implementation and **has not been explicitly confirmed
     collision with the alignment reference when the two are the same FASTA.
 18. **The `test` profile caps resources at 2 CPUs / 4 GB.** The local executor would otherwise refuse
     the 16-CPU / 48 GB requests.
+19. **`crams.csv` lists the destination URIs of newly aligned CRAMs**, as worked out in `meta`. It doesn't
+    check that the publish succeeded, or that it wasn't skipped. This matches what the workflow output
+    index did before.
+20. **The run-records check fails if any one of the three files exists**, even when the other two are
+    missing. In `--samplesheet` mode `samplesheet.tsv` is never written, but the check still covers the
+    other two.

@@ -13,11 +13,18 @@ and analyses.
 
 **Dataset**:
 A Metamist project, named without any `-test` suffix. It owns the buckets that outputs are written to.
+An SG's dataset is the one its sample belongs to, whichever cohort brought it into a run.
 _Avoid_: project (except when you specifically mean the Metamist project name, which may carry `-test`)
 
+**Analysis dataset**:
+The dataset a run is launched under. It pays for the run, holds its run records, and can see every
+dataset its SGs belong to. It need not own any of the SGs.
+_Avoid_: launch dataset, home dataset
+
 **Access level**:
-Whether a run works in a dataset's production (`full`, `standard`) or test (`test`) namespace. Test runs
-read the `<dataset>-test` Metamist project and write to the `-test` bucket.
+Whether a run works in its datasets' production (`full`, `standard`) or test (`test`) namespaces. Test
+runs read `<dataset>-test` Metamist projects and write to `-test` buckets. Every SG in a run must be at the
+run's access level.
 _Avoid_: namespace, environment
 
 **Dataset bucket**:
@@ -25,8 +32,8 @@ _Avoid_: namespace, environment
 under it by fixed convention.
 
 **Cohort**:
-A named, curated set of sequencing groups in Metamist, and the unit a run is asked to process. It can be
-active or inactive.
+A named, curated set of sequencing groups in Metamist, and the unit a run is asked to process. It
+belongs to one dataset, but its SGs can belong to others. It can be active or inactive.
 
 **Sequencing group (SG)**:
 All of the sequencing data for one sample, of one sequencing type and technology. It is the unit of
@@ -62,7 +69,8 @@ _Avoid_: run ID
 
 **Sample sheet**:
 The run's work list, built from Metamist or supplied directly. Each pipeline defines what one row is: in
-alignment, an alignment unit; in combining, one SG with its gVCF and the dataset the SG belongs to.
+alignment, an alignment unit and the dataset its SG belongs to; in combining, one SG with its gVCF and the
+dataset the SG belongs to.
 _Avoid_: manifest, input sheet
 
 **Kind**:
@@ -131,15 +139,15 @@ aligns without alt awareness.
 ### Outputs and runs
 
 **Published output**:
-A file copied from the pipeline into the dataset bucket at its conventional path. A VDS is never
+A file copied from the pipeline into its SG's dataset bucket at its conventional path. A VDS is never
 published: it's written directly to its final path.
 
 **Output clash**:
 A path that this run would publish, but which already exists. It stops the run before any alignment.
 
 **Run records**:
-The per-run directory `alignment_samplesheets/<ar-guid>/`, holding the sample sheet, the index of
-published CRAMs, and the failed SGs.
+The per-run directory `alignment_samplesheets/<ar-guid>/` in the analysis dataset bucket, holding the
+sample sheet, the index of published CRAMs, and the failed SGs.
 
 **Failed SG**:
 An SG that was dropped part-way through a run, at either the `align` or the `register` step. The rest of
