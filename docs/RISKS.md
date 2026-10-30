@@ -100,12 +100,14 @@ documentation.
     and GENCODE bwa-mem2 builds. Building one needs about 76 GB of RAM: run `bwa-mem3 index` on a
     highmem machine once, and store the result next to the FASTA. Built, beside `ref_fasta` in
     `gs://cpg-common-main/rd_references/alignment/unmasked/`.
-21. **bwa-mem3 index sidecars.** If `<prefix>.dict` or `<prefix>.hdr` sits next to the index, bwa-mem3
-    copies its `@SQ` lines verbatim. Only the suffixes in `ref_suffixes` (main.nf) are staged
-    (`fai, bwt.2bit.64, amb, ann, pac`), so no sidecar is seen. Adding `dict` there would change the CRAM headers.
-22. **How alt contigs affect alignment wasn't checked.** The unmasked FASTA includes the alt contigs, and
-    we align without alt awareness (no `.alt`, ADR 0010), so reads in alt-haplotype regions may get MAPQ 0.
-    Check how alt contigs show up in the first real CRAMs.
+21. **bwa-mem3 index sidecars.** If `<prefix>.hdr` or `<baseprefix>.dict` sits next to the index, bwa-mem3
+    copies its `@SQ` lines verbatim. `ref_fasta_dict` is staged deliberately, and is the alt-annotated
+    `.dict` (`samtools dict --alt`), so the alt contigs keep `AH:*` (ADR 0010). Replacing it with a plain
+    GATK `.dict` would drop those tags from every CRAM header.
+22. **How alt awareness affects alignment wasn't checked.** We align alt-aware (`<ref_fasta>.alt` is staged,
+    ADR 0010), so reads in alt-haplotype regions should stay primary on the primary assembly instead of
+    getting MAPQ 0. The stub tests can't show this. Check the first real CRAMs: their `@SQ` alt contigs
+    carry `AH`, and MAPQ in alt-haplotype regions isn't pulled down to 0.
 23. **The input reference falls back to the alignment reference.** ✅ A CRAM whose assay has no
     `reference_assembly.location` used to be decoded with `ref_fasta`, and failed in bazam with a reference
     MD5 mismatch when it was written against another reference. Such a CRAM now fails the sample sheet build,

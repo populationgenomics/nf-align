@@ -55,7 +55,11 @@
             "properties": {
                 "ref_fasta": {
                     "type": "string",
-                    "description": "Reference FASTA that reads are aligned to and CRAMs are encoded against, with <ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac} alongside it (the bwa-mem3 index, built with the FASTA as prefix)."
+                    "description": "Reference FASTA that reads are aligned to and CRAMs are encoded against, with <ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac,alt} alongside it (the bwa-mem3 index, built with the FASTA as prefix, and the .alt file that makes the alignment alt-aware)."
+                },
+                "ref_fasta_dict": {
+                    "type": "string",
+                    "description": "Alt-annotated sequence dictionary of ref_fasta (samtools dict --alt). bwa-mem3 copies its @SQ lines, with their AH tags, into every CRAM header."
                 },
                 "realignment_shards": {
                     "type": "integer",
@@ -67,6 +71,14 @@
                     "type": "string",
                     "default": "",
                     "description": "Extra dupblaster arguments, appended verbatim to its command line, so quote them as for bash."
+                },
+                "aligned_ref_fasta": {
+                    "type": "string",
+                    "description": "Reference an already-aligned CRAM is decoded with when its analysis doesn't record one: by default the DRAGEN-masked FASTA the CRAMs made before nf-align used. Needs <aligned_ref_fasta>.fai alongside."
+                },
+                "somalier_sites": {
+                    "type": "string",
+                    "description": "Sites VCF that somalier extract fingerprints each CRAM at: newly aligned ones, and already-aligned ones without a fingerprint."
                 }
             }
         },
@@ -77,7 +89,7 @@
                 "register": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Register each published CRAM as a Metamist 'cram' analysis."
+                    "description": "Register each published CRAM as a Metamist 'cram' analysis, and each fingerprint as a 'somalier' analysis."
                 },
                 "register_wait_minutes": {
                     "type": "integer",
@@ -98,6 +110,10 @@
                 "cpg_container": {
                     "type": "string",
                     "description": "Image with metamist and cpg_utils, for the sample sheet and registration."
+                },
+                "somalier_container": {
+                    "type": "string",
+                    "description": "Image with somalier, for CRAM fingerprints."
                 }
             }
         }

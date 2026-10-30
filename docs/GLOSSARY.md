@@ -74,12 +74,22 @@ dataset the SG belongs to.
 _Avoid_: manifest, input sheet
 
 **Kind**:
-The form of an SG's input in the sample sheet: `fastq`, `fastq_ora`, `cram`, `bam`, or `aligned`.
+The form of an SG's input in the sample sheet: `fastq`, `fastq_ora`, `cram`, `bam`, or `aligned`. The
+pre-flight check can also turn an SG into kind `unregistered`.
 _Avoid_: reads_type (the Metamist assay field `kind` is derived from)
 
 **Already-aligned SG**:
 An SG with a completed, active CRAM analysis. It's carried through as kind `aligned` (for later
-genotyping) but never realigned, republished or re-registered.
+genotyping) but never realigned, and its CRAM is never republished or re-registered. If it has no somalier
+fingerprint, one is made (gapfilled), published and registered.
+
+**Unregistered SG**:
+An SG with no CRAM analysis, whose CRAM and `.crai` an earlier run published to its destination anyway. It's
+carried as kind `unregistered`. It isn't realigned: its CRAM is fingerprinted, and the CRAM and fingerprint
+are registered separately (ADR 0011).
+
+**Gapfill**:
+Fingerprinting an already-aligned SG that has no completed, active `somalier` analysis.
 
 **Lane**:
 One FASTQ R1/R2 pair, contributed by one assay.
@@ -134,7 +144,7 @@ The per-library summary of duplicate marking, kept alongside each CRAM as
 
 **Alt contigs**:
 The alternative haplotype sequences in hg38. An alt-aware aligner treats them specially. This pipeline
-aligns without alt awareness.
+aligns alt-aware: bwa-mem3 reads the `.alt` file beside the alignment reference (ADR 0010).
 
 ### Outputs and runs
 
