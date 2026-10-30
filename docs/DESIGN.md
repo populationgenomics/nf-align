@@ -246,7 +246,8 @@ outputs. `nextflow lint` is clean, and 24 tests pass, covering every input kind,
 registration paths, injected failures, the pre-flight clash, -resume, cohorts and SG ID modes and
 parameter validation.
 
-**Designed, not implemented:** the multi-dataset design described above (ADR 0008, ADR 0009). In order:
+**Designed, not implemented:** the multi-dataset design described above (ADR 0008, ADR 0009). The step-by-step
+plan is [PLAN.md](PLAN.md). In order:
 `build_samplesheet.py` (`--access-level`, top-level queries, `dataset` column); per-SG destinations in
 `meta`; `publishDir` replacing the `output {}` block; `WRITE_RUN_RECORDS`; the run-records check;
 per-SG resource labels; per-SG registration project; stub tests with SGs from two datasets.
