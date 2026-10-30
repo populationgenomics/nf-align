@@ -15,7 +15,9 @@ cpg-flow (cpg_flow.inputs, cpg_flow.metamist):
 - SG IDs are looked up across projects; missing SGs (or ones not visible to this run), and SGs that aren't
   short-read of the requested sequencing type, fail the run, as they were asked for by name
 - reads are combined across an SG's assays, each assay contributing one FASTQ pair (or the CRAM/BAM)
-- an SG with a completed, active 'cram' analysis is already aligned, and gets one 'aligned' row
+- an SG with a completed, active 'cram' analysis is already aligned, and gets one 'aligned' row. That row
+  carries the CRAM's reference (if its analysis records one), and its 'somalier' fingerprint (if it has a
+  completed, active one). main.nf fingerprints an aligned SG that has none
 - read locations are used exactly as recorded in Metamist
 
     build_samplesheet.py --access-level standard --sequencing-type genome \\
@@ -33,11 +35,11 @@ from metamist.graphql import gql, query
 
 logger = logging.getLogger(__name__)
 
-COLUMNS = ['sg_id', 'dataset', 'kind', 'n_units', 'unit', 'r1', 'r2', 'reads', 'reads_index', 'reads_ref']
+COLUMNS = ['sg_id', 'dataset', 'kind', 'n_units', 'unit', 'r1', 'r2', 'reads', 'reads_index', 'reads_ref', 'somalier']
 SEQUENCING_TYPES = {'genome', 'exome'}
 ACCESS_LEVELS = {'full', 'standard', 'test'}
 
-# the SG fields both queries fetch: assay metadata, and any existing CRAM analyses
+# the SG fields both queries fetch: assay metadata, and any existing CRAM and somalier analyses
 SG_FIELDS = """
 fragment SgFields on GraphQLSequencingGroup {
     id
@@ -51,9 +53,11 @@ fragment SgFields on GraphQLSequencingGroup {
     assays {
         meta
     }
-    analyses(type: {eq: "cram"}, status: {eq: COMPLETED}, active: {eq: true}) {
+    analyses(type: {in_: ["cram", "somalier"]}, status: {eq: COMPLETED}, active: {eq: true}) {
         id
+        type
         output
+        meta
     }
 }
 """
@@ -199,14 +203,30 @@ def fastq_rows(sg_id: str, meta: dict) -> list[dict]:
     return rows
 
 
+def latest_analysis(analyses: list[dict], analysis_type: str) -> dict | None:
+    """The latest analysis of this type that has an output, if any."""
+    found = sorted((a for a in analyses if a['type'] == analysis_type and a.get('output')), key=lambda a: a['id'])
+    return found[-1] if found else None
+
+
 def rows_for(sg: dict) -> list[dict]:
     """Sample sheet rows for one SG: one 'aligned' row if it has a CRAM, else one per FASTQ lane, else one."""
     sg_id = sg['id']
-    # the latest CRAM analysis wins
-    if crams := sorted((a for a in sg['analyses'] if a.get('output')), key=lambda a: a['id']):
-        cram = crams[-1]['output']
+    if cram := latest_analysis(sg['analyses'], 'cram'):
+        somalier = latest_analysis(sg['analyses'], 'somalier')
         return [
-            {'sg_id': sg_id, 'kind': 'aligned', 'n_units': 1, 'unit': 1, 'reads': cram, 'reads_index': f'{cram}.crai'},
+            {
+                'sg_id': sg_id,
+                'kind': 'aligned',
+                'n_units': 1,
+                'unit': 1,
+                'reads': cram['output'],
+                'reads_index': f'{cram["output"]}.crai',
+                # recorded by nf-align's registration; older CRAMs leave main.nf to assume --aligned_ref_fasta
+                'reads_ref': (cram.get('meta') or {}).get('ref_fasta', ''),
+                # empty: main.nf fingerprints the CRAM
+                'somalier': somalier['output'] if somalier else '',
+            },
         ]
 
     meta = combine_assay_meta(sg['assays'])
@@ -275,9 +295,11 @@ def main(
     n_sgs = len({row['sg_id'] for row in rows})
     n_datasets = len({row['dataset'] for row in rows})
     n_aligned = sum(row['kind'] == 'aligned' for row in rows)
+    n_unfingerprinted = sum(row['kind'] == 'aligned' and not row['somalier'] for row in rows)
     logger.info(
         f'{sequencing_type} at access level {access_level}: {n_sgs} SGs from {n_datasets} dataset(s) '
-        f'({n_aligned} already aligned), {len(rows)} rows -> {output}',
+        f'({n_aligned} already aligned, {n_unfingerprinted} of them without a somalier fingerprint), '
+        f'{len(rows)} rows -> {output}',
     )
 
 

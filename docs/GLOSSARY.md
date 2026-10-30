@@ -79,7 +79,11 @@ _Avoid_: reads_type (the Metamist assay field `kind` is derived from)
 
 **Already-aligned SG**:
 An SG with a completed, active CRAM analysis. It's carried through as kind `aligned` (for later
-genotyping) but never realigned, republished or re-registered.
+genotyping) but never realigned, and its CRAM is never republished or re-registered. If it has no somalier
+fingerprint, one is made (gapfilled), published and registered.
+
+**Gapfill**:
+Fingerprinting an already-aligned SG that has no completed, active `somalier` analysis.
 
 **Lane**:
 One FASTQ R1/R2 pair, contributed by one assay.

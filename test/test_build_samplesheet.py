@@ -6,7 +6,7 @@ import csv
 import build_samplesheet
 import pytest
 from build_samplesheet import SamplesheetError, build_rows, fetch_cohort_sgs, fetch_sgs, rows_for, write_sheet
-from conftest import OTHER, PROJECT, cohort, fastq_meta, sg
+from conftest import OTHER, PROJECT, cohort, cram_analysis, fastq_meta, sg, somalier_analysis
 from metamist.graphql import gql, validate
 
 
@@ -25,6 +25,7 @@ def test_rows_classify_each_input_kind(cohort_sgs):
         ('CPG4', 'bam', 1, 1),
         ('CPG5', 'aligned', 1, 1),
         ('CPG6', 'fastq', 1, 1),
+        ('CPG7', 'aligned', 1, 1),
     ]
     assert rows[0]['r1'].endswith('L1_R1.fq.gz')
     assert rows[2]['reads_ref'].endswith('ora.tar')
@@ -32,7 +33,9 @@ def test_rows_classify_each_input_kind(cohort_sgs):
     assert rows[3]['reads_index'].endswith('CPG3.cram.crai')
     assert rows[4]['reads_index'] == ''  # unindexed BAM goes through SORT_INDEX
     assert rows[5]['reads_index'].endswith('CPG5.cram.crai')
-    assert [r['dataset'] for r in rows] == [PROJECT] * 4 + [OTHER] * 3
+    assert rows[5]['somalier'].endswith('CPG5.cram.somalier')
+    assert rows[7]['somalier'] == ''  # fingerprinted by main.nf
+    assert [r['dataset'] for r in rows] == [PROJECT] * 4 + [OTHER] * 3 + [PROJECT]
 
 
 def test_read_locations_are_used_verbatim():
@@ -40,14 +43,39 @@ def test_read_locations_are_used_verbatim():
     assert rows_for(sg('CPG1', [meta]))[0]['r1'] == 'gs://cpg-ds-main-upload/R1.fq.gz'
 
 
-def test_latest_cram_analysis_wins():
-    analyses = [{'id': 9, 'output': 'gs://b/new.cram'}, {'id': 3, 'output': 'gs://b/old.cram'}]
-    assert rows_for(sg('CPG1', analyses=analyses))[0]['reads'] == 'gs://b/new.cram'
+def test_latest_cram_and_somalier_analyses_win():
+    analyses = [
+        cram_analysis(9, 'gs://b/new.cram'),
+        somalier_analysis(2, 'gs://b/old.cram.somalier'),
+        cram_analysis(3, 'gs://b/old.cram'),
+        somalier_analysis(10, 'gs://b/new.cram.somalier'),
+    ]
+    row = rows_for(sg('CPG1', analyses=analyses))[0]
+    assert (row['reads'], row['somalier']) == ('gs://b/new.cram', 'gs://b/new.cram.somalier')
 
 
-def test_cram_analysis_without_output_is_ignored():
+def test_aligned_row_carries_the_reference_its_analysis_records():
+    analyses = [cram_analysis(1, 'gs://b/CPG1.cram', ref_fasta='gs://refs/ref.fasta')]
+    assert rows_for(sg('CPG1', analyses=analyses))[0]['reads_ref'] == 'gs://refs/ref.fasta'
+    # an older CRAM's analysis records none, and main.nf falls back to --aligned_ref_fasta
+    analyses = [{'id': 1, 'type': 'cram', 'output': 'gs://b/CPG1.cram', 'meta': None}]
+    assert rows_for(sg('CPG1', analyses=analyses))[0]['reads_ref'] == ''
+
+
+def test_aligned_row_without_a_somalier_analysis_is_left_for_gapfilling():
+    analyses = [cram_analysis(1, 'gs://b/CPG1.cram'), somalier_analysis(2, None)]
+    row = rows_for(sg('CPG1', analyses=analyses))[0]
+    assert (row['kind'], row['somalier']) == ('aligned', '')
+
+
+def test_analyses_without_output_are_ignored():
     meta = fastq_meta('gs://b/R1.fq.gz', 'gs://b/R2.fq.gz')
-    assert rows_for(sg('CPG1', [meta], analyses=[{'id': 1, 'output': None}]))[0]['kind'] == 'fastq'
+    assert rows_for(sg('CPG1', [meta], analyses=[cram_analysis(1, None)]))[0]['kind'] == 'fastq'
+
+
+def test_a_somalier_analysis_alone_is_not_an_alignment():
+    meta = fastq_meta('gs://b/R1.fq.gz', 'gs://b/R2.fq.gz')
+    assert rows_for(sg('CPG1', [meta], analyses=[somalier_analysis(1, 'gs://b/x.somalier')]))[0]['kind'] == 'fastq'
 
 
 def test_sgs_are_deduplicated_and_filtered_to_the_sequencing_type(caplog):
