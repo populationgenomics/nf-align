@@ -6,7 +6,7 @@ import csv
 import build_samplesheet
 import pytest
 from build_samplesheet import SamplesheetError, build_rows, fetch_cohort_sgs, fetch_sgs, rows_for, write_sheet
-from conftest import PROJECT, cohort, fastq_meta, sg
+from conftest import OTHER, PROJECT, cohort, fastq_meta, sg
 from metamist.graphql import gql, validate
 
 
@@ -16,7 +16,7 @@ def test_queries_match_metamist_schema(query):
 
 
 def test_rows_classify_each_input_kind(cohort_sgs):
-    rows = build_rows(cohort_sgs, PROJECT, 'genome')
+    rows = build_rows(cohort_sgs, 'standard', 'genome')
     assert [(r['sg_id'], r['kind'], r['n_units'], r['unit']) for r in rows] == [
         ('CPG1', 'fastq', 2, 1),
         ('CPG1', 'fastq', 2, 2),
@@ -32,6 +32,7 @@ def test_rows_classify_each_input_kind(cohort_sgs):
     assert rows[3]['reads_index'].endswith('CPG3.cram.crai')
     assert rows[4]['reads_index'] == ''  # unindexed BAM goes through SORT_INDEX
     assert rows[5]['reads_index'].endswith('CPG5.cram.crai')
+    assert [r['dataset'] for r in rows] == [PROJECT] * 4 + [OTHER] * 3
 
 
 def test_read_locations_are_used_verbatim():
@@ -58,22 +59,54 @@ def test_sgs_are_deduplicated_and_filtered_to_the_sequencing_type(caplog):
         sg('CPG1', [meta]),
         sg('CPG3', [meta], technology='long-read'),
     ]
-    assert [r['sg_id'] for r in build_rows(sgs, PROJECT, 'genome')] == ['CPG1']
-    assert [r['sg_id'] for r in build_rows(sgs, PROJECT, 'exome')] == ['CPG2']
+    assert [r['sg_id'] for r in build_rows(sgs, 'standard', 'genome')] == ['CPG1']
+    assert [r['sg_id'] for r in build_rows(sgs, 'standard', 'exome')] == ['CPG2']
     assert 'CPG3: skipping long-read genome' in caplog.text
 
 
-def test_sgs_from_another_project_fail():
+def test_sgs_from_several_projects_keep_their_own_dataset():
     meta = fastq_meta('gs://b/R1.fq.gz', 'gs://b/R2.fq.gz')
-    other = sg('CPG2', [meta], sample={'project': {'name': 'other'}})
-    with pytest.raises(SamplesheetError, match='CPG2: belongs to project other, not ds'):
-        build_rows([sg('CPG1', [meta]), other], PROJECT, 'genome')
+    # one cohort, two projects: the SG's own project decides, not the cohort's
+    sgs = [sg('CPG1', [meta]), sg('CPG2', [meta], project=OTHER)]
+    assert [(r['sg_id'], r['dataset']) for r in build_rows(sgs, 'full', 'genome')] == [
+        ('CPG1', PROJECT),
+        ('CPG2', OTHER),
+    ]
+
+
+def test_test_projects_give_their_dataset_without_the_suffix():
+    meta = fastq_meta('gs://b/R1.fq.gz', 'gs://b/R2.fq.gz')
+    sgs = [sg('CPG1', [meta], project='ds-test'), sg('CPG2', [meta], project='other-test')]
+    assert [r['dataset'] for r in build_rows(sgs, 'test', 'genome')] == [PROJECT, OTHER]
+
+
+@pytest.mark.parametrize('access_level', ['full', 'standard'])
+def test_test_projects_fail_a_production_run(access_level):
+    meta = fastq_meta('gs://b/R1.fq.gz', 'gs://b/R2.fq.gz')
+    sgs = [sg('CPG1', [meta]), sg('CPG2', [meta], project='ds-test'), sg('CPG3', [meta], project='other-test')]
+    with pytest.raises(SamplesheetError) as error:
+        build_rows(sgs, access_level, 'genome')
+    assert str(error.value).splitlines() == [
+        f'CPG2: project ds-test does not match access level {access_level}',
+        f'CPG3: project other-test does not match access level {access_level}',
+    ]
+
+
+def test_production_projects_fail_a_test_run():
+    meta = fastq_meta('gs://b/R1.fq.gz', 'gs://b/R2.fq.gz')
+    sgs = [sg('CPG1', [meta], project='ds-test'), sg('CPG2', [meta]), sg('CPG3', [meta], project=OTHER)]
+    with pytest.raises(SamplesheetError) as error:
+        build_rows(sgs, 'test', 'genome')
+    assert str(error.value).splitlines() == [
+        'CPG2: project ds does not match access level test',
+        'CPG3: project other does not match access level test',
+    ]
 
 
 def test_no_in_scope_sgs_fails():
     meta = fastq_meta('gs://b/R1.fq.gz', 'gs://b/R2.fq.gz')
     with pytest.raises(SamplesheetError, match='No short-read exome'):
-        build_rows([sg('CPG1', [meta])], PROJECT, 'exome')
+        build_rows([sg('CPG1', [meta])], 'standard', 'exome')
 
 
 def test_bad_sgs_are_reported_together():
@@ -84,7 +117,7 @@ def test_bad_sgs_are_reported_together():
         sg('CPG4', [{'reads_type': 'fastq', 'reads': [{'location': 'a'}]}]),
     ]
     with pytest.raises(SamplesheetError) as error:
-        build_rows(sgs, PROJECT, 'genome')
+        build_rows(sgs, 'standard', 'genome')
     assert [line.split(':')[0] for line in str(error.value).splitlines()] == ['CPG1', 'CPG2', 'CPG3', 'CPG4']
 
 
@@ -95,64 +128,65 @@ def test_cram_without_a_reference_fails():
         rows_for(sg('CPG1', [meta]))
 
 
-def test_fetch_cohorts_is_scoped_to_the_project(monkeypatch):
+def test_fetch_cohorts_reports_unusable_cohorts(monkeypatch):
     calls = []
 
     def fake_query(_query, variables):
         calls.append(variables)
         return {
-            'project': {
-                'cohorts': [
-                    cohort('COH1', [sg('CPG1')]),
-                    cohort('COH2', [sg('CPG2')], status='archived'),
-                    cohort('COH3', []),
-                ],
-            },
+            'cohorts': [
+                cohort('COH1', [sg('CPG1')]),
+                cohort('COH2', [sg('CPG2')], status='archived'),
+                cohort('COH3', []),
+            ],
         }
 
     monkeypatch.setattr(build_samplesheet, 'query', fake_query)
-    # COH4 may exist in another project, but isn't visible from this one
-    with pytest.raises(SamplesheetError, match=r"missing: \['COH4'\], inactive: \['COH2'\], empty: \['COH3'\]"):
-        fetch_cohort_sgs('ds-test', ['COH1', 'COH2', 'COH3', 'COH4'])
-    assert calls == [{'project': 'ds-test', 'cohorts': ['COH1', 'COH2', 'COH3', 'COH4']}]
+    # COH4 may not exist, or may be in a project this run's credentials can't read
+    with pytest.raises(
+        SamplesheetError,
+        match=r"missing or not visible to this run: \['COH4'\], inactive: \['COH2'\], empty: \['COH3'\]",
+    ):
+        fetch_cohort_sgs(['COH1', 'COH2', 'COH3', 'COH4'])
+    assert calls == [{'cohorts': ['COH1', 'COH2', 'COH3', 'COH4']}]
 
 
 def test_fetch_cohort_sgs_flattens_cohorts(monkeypatch):
-    response = {'project': {'cohorts': [cohort('COH1', [sg('CPG1'), sg('CPG2')]), cohort('COH2', [sg('CPG1')])]}}
+    response = {'cohorts': [cohort('COH1', [sg('CPG1'), sg('CPG2', project=OTHER)]), cohort('COH2', [sg('CPG1')])]}
     monkeypatch.setattr(build_samplesheet, 'query', lambda _query, **_variables: response)
-    assert [s['id'] for s in fetch_cohort_sgs('ds', ['COH1', 'COH2'])] == ['CPG1', 'CPG2', 'CPG1']
+    assert [s['id'] for s in fetch_cohort_sgs(['COH1', 'COH2'])] == ['CPG1', 'CPG2', 'CPG1']
 
 
-def test_fetch_sgs_is_scoped_to_the_project(monkeypatch):
+def test_fetch_sgs_reports_missing_sgs(monkeypatch):
     calls = []
 
     def fake_query(_query, variables):
         calls.append(variables)
-        return {'project': {'sequencingGroups': [sg('CPG1'), sg('CPG2')]}}
+        return {'sequencingGroups': [sg('CPG1'), sg('CPG2', project=OTHER)]}
 
     monkeypatch.setattr(build_samplesheet, 'query', fake_query)
-    assert [s['id'] for s in fetch_sgs('ds-test', ['CPG1', 'CPG2'], 'genome')] == ['CPG1', 'CPG2']
-    # CPG3 may exist in another project, but isn't visible from this one
-    with pytest.raises(SamplesheetError, match=r"missing: \['CPG3'\]"):
-        fetch_sgs('ds-test', ['CPG1', 'CPG2', 'CPG3'], 'genome')
-    assert calls[-1] == {'project': 'ds-test', 'sgids': ['CPG1', 'CPG2', 'CPG3']}
+    assert [s['id'] for s in fetch_sgs(['CPG1', 'CPG2'], 'genome')] == ['CPG1', 'CPG2']
+    # CPG3 may not exist, or may be in a project this run's credentials can't read
+    with pytest.raises(SamplesheetError, match=r"missing or not visible to this run: \['CPG3'\]"):
+        fetch_sgs(['CPG1', 'CPG2', 'CPG3'], 'genome')
+    assert calls[-1] == {'sgids': ['CPG1', 'CPG2', 'CPG3']}
 
 
 def test_fetch_sgs_fails_on_sgs_of_the_wrong_type(monkeypatch):
     # named SGs fail rather than being skipped, unlike SGs found through a cohort
     sgs = [sg('CPG1'), sg('CPG2', type='exome'), sg('CPG3', technology='long-read')]
-    response = {'project': {'sequencingGroups': sgs}}
+    response = {'sequencingGroups': sgs}
     monkeypatch.setattr(build_samplesheet, 'query', lambda _query, **_variables: response)
     with pytest.raises(
         SamplesheetError,
         match=r"not short-read genome: \['CPG2 \(short-read exome\)', 'CPG3 \(long-read genome\)'\]",
     ):
-        fetch_sgs('ds', ['CPG1', 'CPG2', 'CPG3'], 'genome')
+        fetch_sgs(['CPG1', 'CPG2', 'CPG3'], 'genome')
 
 
 def test_write_sheet_has_every_column(tmp_path, cohort_sgs):
     path = tmp_path / 'sheet.tsv'
-    write_sheet(build_rows(cohort_sgs, PROJECT, 'genome'), str(path))
+    write_sheet(build_rows(cohort_sgs, 'standard', 'genome'), str(path))
     with path.open() as handle:
         rows = list(csv.DictReader(handle, delimiter='\t'))
     assert list(rows[0]) == build_samplesheet.COLUMNS

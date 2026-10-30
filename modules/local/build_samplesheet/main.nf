@@ -1,12 +1,14 @@
-// cohorts or SG IDs -> one sample sheet for this project and sequencing type; see bin/build_samplesheet.py
+// cohorts or SG IDs, from any datasets at this access level -> one sample sheet for this sequencing type;
+// see bin/build_samplesheet.py
 process BUILD_SAMPLESHEET {
-    tag "${project}"
+    tag "${access_level}"
 
     input:
-    val project
+    val access_level
     val sequencing_type
     val cohorts
     val sgids
+    val run_dir // only read by publishDir (conf/base.config)
 
     output:
     path 'samplesheet.tsv'
@@ -16,7 +18,7 @@ process BUILD_SAMPLESHEET {
     def ids = cohorts ? "--cohorts ${cohorts.join(' ')}" : "--sgids ${sgids.join(' ')}"
     """
     build_samplesheet.py \\
-        --project ${project} \\
+        --access-level ${access_level} \\
         --sequencing-type ${sequencing_type} \\
         ${ids} \\
         --output samplesheet.tsv
@@ -24,6 +26,6 @@ process BUILD_SAMPLESHEET {
 
     stub:
     """
-    printf 'sg_id\\tkind\\tn_units\\tunit\\tr1\\tr2\\treads\\treads_index\\treads_ref\\n' > samplesheet.tsv
+    printf 'sg_id\\tdataset\\tkind\\tn_units\\tunit\\tr1\\tr2\\treads\\treads_index\\treads_ref\\n' > samplesheet.tsv
     """
 }

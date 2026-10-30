@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0009
+---
+
 # Pre-flight existence check, with `workflow.output.overwrite = true`
 
 The run must never overwrite a CRAM. Nextflow's `workflow.output.overwrite = false` doesn't fail: it
