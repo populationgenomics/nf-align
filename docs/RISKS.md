@@ -98,12 +98,14 @@ documentation.
 
 20. **No public bwa-mem3 index exists for this reference.** ✅ The Broad bucket only has bwa 0.7 indexes
     and GENCODE bwa-mem2 builds. Building one needs about 76 GB of RAM: run `bwa-mem3 index` on a
-    highmem machine once, and store the result next to the FASTA.
+    highmem machine once, and store the result next to the FASTA. Built, beside `ref_fasta` in
+    `gs://cpg-common-main/rd_references/alignment/unmasked/`.
 21. **bwa-mem3 index sidecars.** If `<prefix>.dict` or `<prefix>.hdr` sits next to the index, bwa-mem3
     copies its `@SQ` lines verbatim. Only the suffixes in `ref_suffixes` (main.nf) are staged
     (`fai, bwt.2bit.64, amb, ann, pac`), so no sidecar is seen. Adding `dict` there would change the CRAM headers.
-22. **How the masked FASTA treats alt contigs wasn't checked.** We align without alt awareness (no
-    `.alt`). Check how alt contigs show up in the first real CRAMs.
+22. **How alt contigs affect alignment wasn't checked.** The unmasked FASTA includes the alt contigs, and
+    we align without alt awareness (no `.alt`, ADR 0010), so reads in alt-haplotype regions may get MAPQ 0.
+    Check how alt contigs show up in the first real CRAMs.
 23. **The input reference falls back to the alignment reference.** ✅ A CRAM whose assay has no
     `reference_assembly.location` used to be decoded with `ref_fasta`, and failed in bazam with a reference
     MD5 mismatch when it was written against another reference. Such a CRAM now fails the sample sheet build,

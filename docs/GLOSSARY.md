@@ -96,7 +96,7 @@ _Avoid_: old reference
 ### Alignment
 
 **Alignment reference**:
-The genome reads are aligned to and output CRAMs are encoded against: the DRAGEN-masked hg38 FASTA.
+The genome reads are aligned to and output CRAMs are encoded against: the unmasked GATK hg38 FASTA (ADR 0010).
 _Avoid_: reference (unqualified, when the input reference could be meant)
 
 **Alignment unit**:
