@@ -12,13 +12,13 @@ process SOMALIER_EXTRACT {
     tuple val(meta), path("${meta.id}.cram.somalier")
 
     script:
-    """
-    somalier extract -d extracted/ --sites ${sites} -f ${fasta} ${cram}
-    mv extracted/*.somalier ${meta.id}.cram.somalier
-    """
+      """
+      somalier extract -d extracted/ --sites ${sites} -f ${fasta} ${cram}
+      mv extracted/*.somalier ${meta.id}.cram.somalier
+      """
 
     stub:
-    """
-    touch ${meta.id}.cram.somalier
-    """
+      """
+      touch ${meta.id}.cram.somalier
+      """
 }

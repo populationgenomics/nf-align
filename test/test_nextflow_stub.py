@@ -201,7 +201,7 @@ def test_failed_sgs_are_dropped_and_reported(run, tmp_path):
     )
     result, out, tasks = run('-c', str(inject), '--register', 'true')
 
-    # ignored failures don't fail the run; they're listed instead
+    # ignored failures don't fail the run; they're listed instead, a CRAM and its fingerprint each on their own
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'CPG3' not in task_names(tasks, 'MERGE_TO_CRAM')  # never merged from the surviving shard
     assert not (cram_dir(out, PROJECT) / 'CPG3.cram').exists()
@@ -212,6 +212,7 @@ def test_failed_sgs_are_dropped_and_reported(run, tmp_path):
         ('CPG2', PROJECT, 'somalier'),
         ('CPG3', PROJECT, 'align'),
         ('CPG6', OTHER, 'register'),
+        ('CPG6', OTHER, 'register_somalier'),
         (GAPFILL, PROJECT, 'register_somalier'),
     ]
     assert {r['sg_id'] for r in read_tsv(run_dir(out) / 'crams.csv', sep=',')} == NEW - {'CPG3'}
@@ -228,13 +229,54 @@ def test_existing_outputs_fail_the_run_before_any_alignment(run):
     assert result.returncode != 0
     # log.warn/log.error go to stderr, or to stdout when nextflow detects an AI agent (e.g. CLAUDECODE is set)
     console = result.stdout + result.stderr
-    # 5 SGs x 4 outputs and the gapfilled fingerprint, less the deleted CRAM
-    assert '20 output(s) already exist' in console
+    # the 4 SGs with a CRAM and index count as unregistered, and clash on their fingerprint alone. CPG4 clashes on
+    # its index, fingerprint and metrics, and the gapfilled SG on its fingerprint
+    assert '8 output(s) already exist' in console
     assert f'{cram_dir(out, OTHER)}/CPG4.cram.crai' in console
-    assert f'{cram_dir(out, PROJECT)}/CPG1.cram' in console
+    assert f'{metrics_dir(out, OTHER)}/CPG4.markduplicates-metrics' in console
+    assert f'{cram_dir(out, PROJECT)}/CPG1.cram.somalier' in console
     assert f'{cram_dir(out, PROJECT)}/{GAPFILL}.cram.somalier' in console
+    assert 'CPG1.markduplicates-metrics' not in console
     assert 'CPG9' not in console
     assert not [t for t in tasks if t['status'] == 'COMPLETED']
+
+
+def test_unregistered_cram_is_fingerprinted_and_registered_not_realigned(run, tmp_path):
+    # an earlier run published CPG1's CRAM and index (CPG1 has 2 FASTQ lanes), and CPG4's (a BAM), but registered
+    # neither. A stale metrics file doesn't matter
+    earlier = tmp_path / 'results'
+    for sg_id, ds in [('CPG1', PROJECT), ('CPG4', OTHER)]:
+        touch(cram_dir(earlier, ds) / f'{sg_id}.cram')
+        touch(cram_dir(earlier, ds) / f'{sg_id}.cram.crai')
+    touch(metrics_dir(earlier, PROJECT) / 'CPG1.markduplicates-metrics')
+
+    result, out, tasks = run('--register', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert task_names(tasks, 'ALIGN_SHARD') == {'CPG3:1', 'CPG3:2'}
+    assert task_names(tasks, 'SORT_INDEX') == set()
+    assert task_names(tasks, 'SOMALIER_EXTRACT') == NEW | {GAPFILL}
+    # the found CRAMs are registered in tasks of their own, as are their fingerprints
+    assert task_names(tasks, 'REGISTER_ANALYSIS') == (
+        {f'{s}:cram' for s in NEW} | {f'{s}:somalier' for s in NEW | {GAPFILL}}
+    )
+    for sg_id, ds in [('CPG1', PROJECT), ('CPG4', OTHER)]:
+        assert (cram_dir(out, ds) / f'{sg_id}.cram.somalier').exists()
+        # fingerprinted against the alignment reference, which an earlier nf-align run wrote the CRAM with
+        staged = task_dir(tasks, tmp_path, f'SOMALIER_EXTRACT ({sg_id})')
+        assert {p.name for p in (staged / 'ref').iterdir()} == {'ref.fasta', 'ref.fasta.fai'}
+        assert (staged / f'{sg_id}.cram').resolve() == cram_dir(out, ds) / f'{sg_id}.cram'
+        command = (task_dir(tasks, tmp_path, f'REGISTER_ANALYSIS ({sg_id}:cram)') / '.command.out').read_text()
+        cram = cram_dir(out, ds) / f'{sg_id}.cram'
+        assert f'--output {cram} --type cram --secondary index={cram}.crai ' in command
+        assert f'ref_fasta={tmp_path}/refs/ref.fasta' in command
+    # the run records list only the CRAMs this run aligned
+    assert {r['sg_id'] for r in read_tsv(run_dir(out) / 'crams.csv', sep=',')} == NEW - {'CPG1', 'CPG4'}
+    assert (run_dir(out) / 'failed.csv').read_text() == 'sg_id,dataset,failed_at\n'
+
+    # the fingerprints this session claimed don't stop a resume, and nothing reruns
+    result, _out, tasks = run('--register', 'true', '-resume')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert {t['status'] for t in tasks} == {'CACHED'}
 
 
 def test_reusing_an_ar_guid_fails_before_any_task(run):

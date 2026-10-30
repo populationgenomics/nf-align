@@ -47,8 +47,8 @@ run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (or --s
           sample sheet ─ parse, per-SG destinations into meta ─┬─ aligned ────────────────────────────▶ (all_crams, for genotyping)
                                                                ├─ aligned, no somalier ─┐
                                                                └─ to align ─────────────┴─ pre-flight ─┬─ ALIGN ─ publishDir: CRAM, .crai, metrics → SG's dataset bucket
-                                                                                                       └─ SOMALIER_EXTRACT (new and gapfilled CRAMs) ─ publishDir: .somalier → SG's dataset bucket
-                                                       then REGISTER_ANALYSIS (cram and somalier, per SG, SG's dataset)
+                                                                                                       └─ SOMALIER_EXTRACT (new, gapfilled and unregistered CRAMs) ─ publishDir: .somalier → SG's dataset bucket
+                                                       then REGISTER_ANALYSIS (once per CRAM and per somalier, SG's dataset)
                                                        and  WRITE_RUN_RECORDS (crams.csv, failed.csv → analysis dataset bucket)
 ```
 
@@ -96,7 +96,9 @@ up front:
 - **Outputs**: before anything is aligned, every CRAM, `.crai`, `.somalier` and metrics URI that the run would
   publish is checked in its SG's dataset bucket. If any exist, the run fails and lists them all. For a gapfilled
   `aligned` row only the `.somalier` is checked, and other `aligned` rows are not checked: for those, an existing
-  CRAM is the expected state.
+  CRAM is the expected state. An SG to be aligned whose CRAM and `.crai` both exist is unregistered: it becomes
+  one `unregistered` row pointing at that CRAM, and only its `.somalier` is checked
+  ([ADR 0011](adr/0011-register-and-fingerprint-unregistered-crams.md)).
 
 A run that passes the check records the outputs it claims in `<workDir>/nf-align-claims/<sessionId>.txt`.
 `-resume` keeps the session ID, so a resumed run lets those outputs exist and republishes them from the
@@ -166,7 +168,7 @@ Run records go under the analysis dataset's output root, at
 | `crams.csv` (`sg_id, dataset, cram, crai`, the published URIs) | `WRITE_RUN_RECORDS`, a native (`exec:`) process that gets the collected records, sorted by SG |
 | `failed.csv` (`sg_id, dataset, failed_at`) | `WRITE_RUN_RECORDS` |
 
-Only newly aligned SGs are published, plus the fingerprints of gapfilled SGs. A gapfilled fingerprint goes
+Only newly aligned SGs are published, plus the fingerprints of gapfilled and unregistered SGs. A gapfilled fingerprint goes
 to the standard layout, `[exome/]cram/<sg>.cram.somalier`, even when the existing CRAM is somewhere else.
 
 Each per-SG task's `dataset` resource label is `meta.dataset`, so its cost goes to the SG's dataset.
@@ -174,8 +176,9 @@ Each per-SG task's `dataset` resource label is `meta.dataset`, so its cost goes 
 
 ### 5. Registration (`REGISTER_ANALYSIS`)
 
-When `register` is true, this runs once per new CRAM and once per fingerprint (new or gapfilled), in the SG's
-own Metamist project. It gets the output URI from `meta`, and polls for up to `register_wait_minutes` until the
+When `register` is true, this runs once per output: once per new or unregistered CRAM, and once per
+fingerprint (new, gapfilled or unregistered), in the SG's own Metamist project. A CRAM's registration doesn't
+wait for its fingerprint. It gets the output URI from `meta`, and polls for up to `register_wait_minutes` until the
 output (and a CRAM's `.crai`) exist, because publishing is asynchronous
 ([ADR 0005](adr/0005-registration-as-a-polling-process.md)). It then runs:
 
@@ -198,7 +201,9 @@ Metrics are not registered.
 - **`BUILD_SAMPLESHEET`**, **`WRITE_RUN_RECORDS`**, the run-records check and the pre-flight check fail the
   whole run.
 - **Reporting:** dropped SGs are written to `alignment_samplesheets/<arGuid>/failed.csv` with the step
-  they failed at (`align`, `somalier`, `register` for the CRAM, or `register_somalier`), and logged as a warning. **The run still exits 0.**
+  they failed at, and logged as a warning. The CRAM (`align`, then `register`) and its fingerprint (`somalier`,
+  then `register_somalier`) are reported separately, so an SG can have two rows. A CRAM that failed to align
+  is reported at `align` alone. **The run still exits 0.**
 
 ## Resources (`conf/base.config`)
 

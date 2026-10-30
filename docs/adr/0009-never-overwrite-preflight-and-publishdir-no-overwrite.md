@@ -22,8 +22,9 @@ that a clash in the middle of a run would fail loudly.
   `publishDir` skips them when it republishes cached tasks. The run-records check is skipped when
   `workflow.resume` is set.
 - **Unregistered CRAM:** a CRAM that was published but never registered (for example, because
-  registration failed) stops the next run for that SG at the pre-flight check, until someone registers or
-  deletes the file.
+  registration failed) is fingerprinted and registered by the next run, not realigned
+  ([ADR 0011](0011-register-and-fingerprint-unregistered-crams.md)). A partial set, such as a `.crai`
+  without its CRAM, still stops the run.
 - **Accepted gap:** two runs launched close together for the same SG can both pass the check. The second
   run's publish is then skipped silently, and its registration records the first run's CRAM under the
   second run's `ar-guid`. The CRAM itself is valid, and the sample sheet builder takes the latest CRAM
