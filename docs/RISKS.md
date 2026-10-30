@@ -41,6 +41,9 @@ documentation.
    different set of inputs isn't caught.
 10. **Shard count is part of the task hash.** Changing `realignment_shards` between `-resume` runs
     re-aligns every CRAM/BAM input from scratch.
+    - **So are each SG's destinations.** `meta` carries the SG's Metamist project, output root and
+      relative paths, and `meta` is part of every per-SG task hash. Changing `output_root`, `accessLevel`
+      or `sequencing_type` between `-resume` attempts re-runs alignment for every SG.
 
 ## Re-running after a partial failure
 
@@ -129,5 +132,7 @@ documentation.
     its project name by convention, and isn't looked up. A dataset that doesn't follow the convention
     fails at the pre-flight check or at publishing.
 31. **Per-SG resource labels are verified only locally.** ✅ (Nextflow 26.10.4, local executor) A
-    `resourceLabels` closure is evaluated per task against `meta`. That Google Batch applies those labels
-    to the VM, so the cost is attributed to the SG's dataset, hasn't been checked.
+    `resourceLabels` closure is evaluated per task against `meta`, and
+    `test_per_sg_tasks_are_labelled_with_the_sgs_dataset` checks every per-SG task's label in a stub run.
+    That Google Batch applies those labels to the VM, so the cost is attributed to the SG's dataset,
+    hasn't been checked.

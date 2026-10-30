@@ -85,3 +85,15 @@ Part B was decided during implementation and **has not been explicitly confirmed
 20. **The run-records check fails if any one of the three files exists**, even when the other two are
     missing. In `--samplesheet` mode `samplesheet.tsv` is never written, but the check still covers the
     other two.
+21. **`WRITE_RUN_RECORDS` is a native `exec:` process**, not a `script:` process on the local executor.
+    A spike on 26.10.4 showed that a file written to `task.workDir` from Groovy, and declared as a `path`
+    output, is published by `publishDir`. It needs no container and no VM.
+22. **`WRITE_RUN_RECORDS` fails the run** (`errorStrategy 'terminate'`), as `BUILD_SAMPLESHEET` does.
+    Under the default `ignore`, a failure would have lost the run records without notice.
+23. **`crams.csv` and `failed.csv` rows are sorted by SG ID.** The records reach the process in task
+    completion order, so without sorting the input would change between attempts, and `-resume` would
+    rerun the task.
+24. **The access-level check comes before the sequencing-type filter.** An SG at the wrong access level
+    fails the sample sheet step, even if it would otherwise have been skipped as the other sequencing
+    type or as long-read.
+25. **`BUILD_SAMPLESHEET` is tagged with the access level**, now that it isn't given a project.

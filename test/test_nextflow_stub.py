@@ -295,7 +295,8 @@ def test_per_sg_tasks_are_labelled_with_the_sgs_dataset(run, tmp_path):
     assert len(labelled) == 17  # SORT_INDEX 1, ALIGN_SHARD 6, MERGE_TO_CRAM 3, ALIGN_TO_CRAM 2, REGISTER_ANALYSIS 5
     for t in labelled:
         sg_id = t['name'].split('(')[1].rstrip(')').split(':')[0]
-        assert f'LABEL={DATASET[sg_id]}' in (task_dir(tasks, tmp_path, t['name']) / '.command.out').read_text()
+        # beforeScript's output goes to the task log, not .command.out
+        assert f'LABEL={DATASET[sg_id]}' in (task_dir(tasks, tmp_path, t['name']) / '.command.log').read_text()
 
 
 def test_workflow_needs_both_containers(run, tmp_path):

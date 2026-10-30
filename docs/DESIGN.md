@@ -154,7 +154,7 @@ Run records go under the analysis dataset's output root, at
 | file | written by |
 |---|---|
 | `samplesheet.tsv` | `BUILD_SAMPLESHEET` |
-| `crams.csv` (`sg_id, dataset, cram, crai`, the published URIs) | `WRITE_RUN_RECORDS`, a local-executor process that gets the collected records |
+| `crams.csv` (`sg_id, dataset, cram, crai`, the published URIs) | `WRITE_RUN_RECORDS`, a native (`exec:`) process that gets the collected records, sorted by SG |
 | `failed.csv` (`sg_id, dataset, failed_at`) | `WRITE_RUN_RECORDS` |
 
 Only newly aligned SGs are published.
@@ -182,7 +182,8 @@ Metrics are not registered.
   ([ADR 0007](adr/0007-ignore-failed-sgs-and-report.md)).
 - **Registration** is retried once and then ignored.
 - **Spot preemption** is retried by `google.batch.maxSpotAttempts = 3`.
-- **`BUILD_SAMPLESHEET`** and the pre-flight check fail the whole run.
+- **`BUILD_SAMPLESHEET`**, **`WRITE_RUN_RECORDS`**, the run-records check and the pre-flight check fail the
+  whole run.
 - **Reporting:** dropped SGs are written to `alignment_samplesheets/<arGuid>/failed.csv` with the step
   they failed at (`align` or `register`), and logged as a warning. **The run still exits 0.**
 
@@ -194,7 +195,7 @@ Metrics are not registered.
 | `MERGE_TO_CRAM` | 8 | 24 GB × attempt | 400 / 100 GB | any |
 | `SORT_INDEX` | 8 | 32 GB × attempt | 550 / 250 GB | any |
 | `BUILD_SAMPLESHEET`, `REGISTER_ANALYSIS` | 1 | 4 / 2 GB | default | any |
-| `WRITE_RUN_RECORDS` | local executor | | | |
+| `WRITE_RUN_RECORDS` | native `exec:`, in the Nextflow process | | | |
 
 ## Files
 
@@ -241,16 +242,14 @@ verbatim to the dupblaster command, so quote it as you would for bash:
 
 ## Status and next steps
 
-**Done:** the single-dataset design (ADR 0001, ADR 0002): one dataset per run, published with workflow
-outputs. `nextflow lint` is clean, and 24 tests pass, covering every input kind, exome layout,
-registration paths, injected failures, the pre-flight clash, -resume, cohorts and SG ID modes and
+**Done:** the multi-dataset design described above (ADR 0008, ADR 0009), implemented from
+[PLAN.md](PLAN.md): `build_samplesheet.py` with `--access-level`, top-level queries and a `dataset` column;
+per-SG destinations in `meta`; `publishDir` in place of the `output {}` block; `WRITE_RUN_RECORDS`; the
+run-records check; per-SG resource labels; per-SG registration projects. `nextflow lint` is clean, and 40
+tests pass. The stub runs span two datasets and cover every input kind, the exome layout, registration
+paths and projects (including `accessLevel test`), injected failures, the run-records and pre-flight
+clashes, -resume, cohorts and SG ID modes, a sheet row without a dataset, per-SG resource labels and
 parameter validation.
-
-**Designed, not implemented:** the multi-dataset design described above (ADR 0008, ADR 0009). The step-by-step
-plan is [PLAN.md](PLAN.md). In order:
-`build_samplesheet.py` (`--access-level`, top-level queries, `dataset` column); per-SG destinations in
-`meta`; `publishDir` replacing the `output {}` block; `WRITE_RUN_RECORDS`; the run-records check;
-per-SG resource labels; per-SG registration project; stub tests with SGs from two datasets.
 
 **Not done yet:**
 1. **Build the images.** `align_container` needs bazam, bwa-mem3, dupblaster, samtools and orad;
