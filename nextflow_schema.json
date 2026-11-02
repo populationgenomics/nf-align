@@ -89,13 +89,13 @@
                 "register": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Register each published CRAM as one Metamist 'cram' analysis, with its index and somalier fingerprint as secondary files."
+                    "description": "Register each published CRAM as one Metamist 'cram' analysis, with its index and somalier fingerprint as secondary files, and, after it, its CRAM QC as one 'cram_qc' analysis."
                 },
                 "register_wait_minutes": {
                     "type": "integer",
                     "default": 30,
                     "minimum": 1,
-                    "description": "How long registration waits for a CRAM and its index to be published."
+                    "description": "How long registration waits for an analysis's files to be published."
                 }
             }
         },
@@ -105,7 +105,7 @@
             "properties": {
                 "align_container": {
                     "type": "string",
-                    "description": "Image with bazam, bwa-mem3, dupblaster, samtools and orad.."
+                    "description": "Image with bazam, bwa-mem3, dupblaster, samtools and orad. samtools stats runs in it too."
                 },
                 "cpg_container": {
                     "type": "string",
@@ -114,6 +114,57 @@
                 "somalier_container": {
                     "type": "string",
                     "description": "Image with somalier, for CRAM fingerprints."
+                },
+                "verifybamid_container": {
+                    "type": "string",
+                    "description": "Image with VerifyBamID2, for CRAM QC."
+                },
+                "picard_container": {
+                    "type": "string",
+                    "description": "Image with picard, for CRAM QC."
+                }
+            }
+        },
+        "cram_qc": {
+            "title": "CRAM QC",
+            "type": "object",
+            "properties": {
+                "cram_qc": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Run VerifyBamID, samtools stats and Picard metrics on each newly aligned CRAM, publish them with the duplicate metrics to [exome/]cram_qc/<sg>/, and register them as one Metamist 'cram_qc' analysis. The duplicate metrics are published either way."
+                },
+                "genome_contam_ud": {
+                    "type": "string",
+                    "description": "VerifyBamID's UD contamination resource for genomes."
+                },
+                "genome_contam_bed": {
+                    "type": "string",
+                    "description": "VerifyBamID's BED contamination resource for genomes."
+                },
+                "genome_contam_mu": {
+                    "type": "string",
+                    "description": "VerifyBamID's MU contamination resource for genomes."
+                },
+                "exome_contam_ud": {
+                    "type": "string",
+                    "description": "VerifyBamID's UD contamination resource for exomes."
+                },
+                "exome_contam_bed": {
+                    "type": "string",
+                    "description": "VerifyBamID's BED contamination resource for exomes."
+                },
+                "exome_contam_mu": {
+                    "type": "string",
+                    "description": "VerifyBamID's MU contamination resource for exomes."
+                },
+                "genome_coverage_interval_list": {
+                    "type": "string",
+                    "description": "Regions CollectWgsMetrics measures coverage over. Its header is replaced with ref_fasta_dict's, so it can have been made against another build of hg38."
+                },
+                "exome_evaluation_interval_list": {
+                    "type": "string",
+                    "description": "Bait and target regions for CollectHsMetrics. Its header is replaced with ref_fasta_dict's."
                 }
             }
         }
@@ -122,6 +173,7 @@
         { "$ref": "#/$defs/run" },
         { "$ref": "#/$defs/alignment" },
         { "$ref": "#/$defs/registration" },
+        { "$ref": "#/$defs/cram_qc" },
         { "$ref": "#/$defs/containers" }
     ]
 }

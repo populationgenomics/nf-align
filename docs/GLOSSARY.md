@@ -134,8 +134,8 @@ told apart using coordinates parsed from Illumina read names.
 _Avoid_: optical duplicate (a subset)
 
 **Duplicate metrics**:
-The per-library summary of duplicate marking, kept alongside each CRAM as
-`<sg>.markduplicates-metrics`.
+The per-library summary of duplicate marking. It's written by alignment, but it's part of the SG's
+CRAM QC.
 
 **Alt contigs**:
 The alternative haplotype sequences in hg38. An alt-aware aligner treats them specially. This pipeline
@@ -155,8 +155,20 @@ The per-run directory `alignment_samplesheets/<ar-guid>/` in the analysis datase
 sample sheet, the index of published CRAMs, and the failed SGs.
 
 **Failed SG**:
-An SG that was dropped part-way through a run, at the `align`, `somalier` or `register` step. The rest of
-the run carries on, and the SG is listed in the run records.
+An SG that didn't get through every step of a run: `align`, `somalier`, `register`, `qc` or `register_qc`.
+The rest of the run carries on, and the SG is listed in the run records once, at the first step it missed.
+An SG that fails only at `qc` or `register_qc` still has its CRAM registered.
+
+**CRAM QC**:
+Quality-control metrics computed from one newly aligned CRAM, kept together in one folder per SG and
+recorded as one `cram_qc` analysis. Its primary file is the CRAM, and every metrics file is a secondary
+file. It's all or nothing: an SG either gets every file registered or no `cram_qc` analysis. It never
+holds up the CRAM's own registration, and it's only registered after the CRAM is.
+_Avoid_: align QC, alignment QC, `qc` analysis (a different, dataset-level type)
+
+**CRAM companion**:
+A file that belongs to the CRAM itself and is registered on its `cram` analysis: the index and the somalier
+fingerprint. QC metrics are not companions.
 
 ### Combining
 

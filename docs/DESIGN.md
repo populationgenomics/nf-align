@@ -45,9 +45,11 @@ There is no `outputDir`: every destination is worked out per SG (see Outputs). T
 run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (or --samplesheet)
                                                              ▼
           sample sheet ─ parse, per-SG destinations into meta ─┬─ aligned ────────────────────────────▶ (all_crams, for genotyping)
-                                                               └─ to align ─ pre-flight ─ ALIGN ─ publishDir: CRAM, .crai, metrics → SG's dataset bucket
-                                                                                            └─ SOMALIER_EXTRACT ─ publishDir: .somalier → SG's dataset bucket
-                                                                                                                └─ REGISTER_ANALYSIS (one cram analysis per SG, SG's dataset)
+                                                               └─ to align ─ pre-flight ─ ALIGN ─ publishDir: CRAM, .crai, duplicate metrics → SG's dataset bucket
+                                                                                            ├─ SOMALIER_EXTRACT ─ publishDir: .somalier → SG's dataset bucket
+                                                                                            │                   └─ REGISTER_CRAM (one cram analysis per SG, SG's dataset)
+                                                                                            └─ CRAM_QC ─ publishDir: QC metrics → SG's dataset bucket   │
+                                                                                                       └────────────────────────── REGISTER_CRAM_QC ◀───┘ (one cram_qc analysis per SG)
                                                        then WRITE_RUN_RECORDS (crams.csv, failed.csv → analysis dataset bucket)
 ```
 
@@ -90,8 +92,8 @@ up front:
   `alignment_samplesheets/<arGuid>/` in the analysis dataset bucket already holds a `samplesheet.tsv`,
   `crams.csv` or `failed.csv`. This guards against an `arGuid` reused by hand while testing. It's skipped
   on `-resume`.
-- **Outputs**: before anything is aligned, every CRAM, `.crai`, `.somalier` and metrics URI that the run would
-  publish is checked in its SG's dataset bucket. If any exist, the run fails and lists them all. `aligned` rows
+- **Outputs**: before anything is aligned, every CRAM, `.crai`, `.somalier` and QC metrics URI that the run
+  would publish is checked in its SG's dataset bucket. If any exist, the run fails and lists them all. `aligned` rows
   are not checked: they publish nothing, and an existing CRAM is the expected state. An unregistered CRAM is a
   clash like any other, because the run only registers files it wrote
   ([ADR 0013](adr/0013-only-register-files-this-run-wrote.md)).
@@ -143,7 +145,7 @@ next to the rest of its inputs:
 
 - `dataset`, and its Metamist project (`<ds>` or `<ds>-test`)
 - its output root: `gs://cpg-<ds>-{main|test}`, or `<output_root>/<ds>`
-- the relative paths of its CRAM, `.crai`, somalier fingerprint and metrics
+- the relative paths of its CRAM, `.crai`, somalier fingerprint and QC metrics
 
 The `publishDir` settings in config only apply these values, and the pre-flight check and registration
 read the same `meta`, so publishing and registration can't drift apart. `main.nf` stays the one place the
@@ -153,7 +155,8 @@ layout is defined:
 |---|---|
 | CRAM + index | `[exome/]cram/<sg>.cram`, plus `.crai` |
 | somalier fingerprint | `[exome/]cram/<sg>.cram.somalier` (cpg-flow's `CramPath.somalier_path`) |
-| duplicate metrics | `[exome/]qc/markduplicates_metrics/<sg>.markduplicates-metrics` |
+| duplicate metrics | `[exome/]cram_qc/<sg>/<sg>.markduplicates-metrics`, even with `--cram_qc false` |
+| CRAM QC ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)) | `[exome/]cram_qc/<sg>/`: `<sg>.verify-bamid.selfSM`, `<sg>.samtools-stats`, `<sg>.{alignment_summary,base_distribution_by_cycle,insert_size,quality_by_cycle,quality_yield}_metrics`, `<sg>.picard-{wgs,hs}-metrics` |
 
 Run records go under the analysis dataset's output root, at
 `alignment_samplesheets/<arGuid>/`:
@@ -169,10 +172,27 @@ Only newly aligned SGs are published.
 Each per-SG task's `dataset` resource label is `meta.dataset`, so its cost goes to the SG's dataset.
 `BUILD_SAMPLESHEET` and `WRITE_RUN_RECORDS` are labelled with the analysis dataset.
 
-### 5. Registration (`REGISTER_ANALYSIS`)
+### 5. CRAM QC (`CRAM_QC`)
 
-When `register` is true, this runs once per newly aligned SG, after its CRAM is fingerprinted, in the
-SG's own Metamist project. Each CRAM gets a single `cram` analysis, with its index and fingerprint as
+When `cram_qc` is true (the default), every newly aligned CRAM is QC'd alongside its fingerprint, as
+cpg-flow's `CramQc*` stages did ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)). There are three
+tasks, one per image, each staging the CRAM with the alignment reference's FASTA, `.fai` and `.dict`:
+
+- `VERIFYBAMID`: VerifyBamID2 against the sequencing type's 1000G contamination resources
+  (`<type>_contam_{ud,bed,mu}`), capped at depth 1000 for exomes.
+- `SAMTOOLS_STATS`: `samtools stats`, in the align image.
+- `PICARD_METRICS`: CollectMultipleMetrics, run alongside CollectWgsMetrics over
+  `genome_coverage_interval_list` (genome), or CollectHsMetrics with `exome_evaluation_interval_list` as
+  both bait and target (exome). The interval list is passed through BED and back with the `.dict`, so its
+  header matches the alignment reference whichever hg38 build it was made against.
+
+An SG comes out of `CRAM_QC` only if all three succeeded. A QC failure never touches the CRAM's own
+registration. Already-aligned SGs aren't QC'd.
+
+### 6. Registration (`REGISTER_CRAM`, `REGISTER_CRAM_QC`)
+
+Both are the `REGISTER_ANALYSIS` process, included twice. `REGISTER_CRAM` runs once per newly aligned SG,
+after its CRAM is fingerprinted, in the SG's own Metamist project. Each CRAM gets a single `cram` analysis, with its index and fingerprint as
 secondary files ([ADR 0012](adr/0012-one-analysis-per-cram.md)). A CRAM whose fingerprint failed isn't
 registered. The URIs come from `meta`, and the task polls for up to `register_wait_minutes` until the CRAM,
 `.crai` and `.somalier` all exist, because publishing is asynchronous
@@ -186,9 +206,23 @@ python3 -m cpg_utils.metamist_registration --project <SG's dataset>[-test] --out
 
 The fingerprint is found at `outputs.secondary_files.somalier.path` on the CRAM analysis.
 
-Metrics are not registered.
+`REGISTER_CRAM_QC` runs once an SG's CRAM QC is complete *and* its `cram` analysis is registered, so a
+`cram_qc` analysis never points at an unregistered CRAM. The CRAM is its primary file again, and every QC
+file, including the duplicate metrics, is a secondary file:
 
-### 6. Failures
+```
+python3 -m cpg_utils.metamist_registration --project <SG's dataset>[-test] --output <cram> --type cram_qc \
+    --secondary verifybamid=<dir>/<sg>.verify-bamid.selfSM samtools_stats=<dir>/<sg>.samtools-stats \
+        alignment_summary_metrics=... base_distribution_by_cycle_metrics=... insert_size_metrics=... \
+        quality_by_cycle_metrics=... quality_yield_metrics=... picard_{wgs,hs}_metrics=... \
+        markduplicates_metrics=<dir>/<sg>.markduplicates-metrics \
+    --sgs <sg> --meta sequencing_type=<type> ar-guid=<arGuid>
+```
+
+where `<dir>` is `[exome/]cram_qc/<sg>`. `cram_qc` is a Metamist analysis type of its own, apart from the
+dataset-level `qc` of cpg-flow's MultiQC reports, and has to exist in Metamist before a registering run.
+
+### 7. Failures
 
 - **Per-SG tasks:** an exit code of 137 or 140 (OOM) is retried twice, with memory scaled by the attempt
   number. Any other failure is **ignored**: that SG is dropped and the rest carry on
@@ -199,8 +233,10 @@ Metrics are not registered.
   whole run.
 - **Reporting:** dropped SGs are written to `alignment_samplesheets/<arGuid>/failed.csv` with the step
   they failed at, and logged as a warning. Each SG has one row, at the first step it didn't get through:
-  `align`, `somalier`, then `register`. An SG that failed at `somalier` or `register` has a published CRAM
-  but no analysis, and the next run's pre-flight check stops on it until it's registered or deleted by hand. **The run still exits 0.**
+  `align`, `somalier`, `register`, `qc`, then `register_qc` (steps that are switched off are left out). An SG
+  that failed at `somalier` or `register` has a published CRAM but no analysis, and the next run's pre-flight
+  check stops on it until it's registered or deleted by hand. An SG that failed at `qc` or `register_qc` has a
+  registered CRAM, so later runs take it as already aligned and never retry its QC. **The run still exits 0.**
 
 ## Resources (`conf/base.config`)
 
@@ -210,7 +246,10 @@ Metrics are not registered.
 | `MERGE_TO_CRAM` | 8 | 24 GB × attempt | 400 / 100 GB | `n2-standard-8`, `n2-highmem-8`, `n2-highmem-16` |
 | `SORT_INDEX` | 8 | 32 GB × attempt | 550 / 250 GB | `n2-highmem-8`, `n2-highmem-16`, `n2-highmem-16` |
 | `SOMALIER_EXTRACT` | 1 | 4 GB × attempt | 100 / 20 GB | `e2-standard-2`, `e2-standard-4`, `e2-standard-8` |
-| `BUILD_SAMPLESHEET`, `REGISTER_ANALYSIS` | 1 | 4 / 2 GB | default | `e2-standard-2` |
+| `VERIFYBAMID` | 4 | 12 GB × attempt | 100 / 20 GB | `n2-standard-4`, `n2-highmem-4`, `n2-highmem-8` |
+| `SAMTOOLS_STATS` | 4 | 4 GB × attempt | 100 / 20 GB | `e2-standard-4`, `e2-standard-4`, `e2-standard-8` |
+| `PICARD_METRICS` (two JVMs, 40% heap each) | 4 | 12 GB × attempt | 100 / 20 GB | `n2-standard-4`, `n2-highmem-4`, `n2-highmem-8` |
+| `BUILD_SAMPLESHEET`, `REGISTER_CRAM`, `REGISTER_CRAM_QC` | 1 | 4 / 2 GB | default | `e2-standard-2` |
 | `WRITE_RUN_RECORDS` | native `exec:`, in the Nextflow process | | | |
 
 **Every process names one exact `machineType`**, chosen by `task.attempt`, so an OOM retry lands on a
@@ -224,12 +263,13 @@ fit. The align processes use N2 because bwa-mem3 needs AVX2.
 ## Files
 
 ```
-main.nf                       params validation, run-records check, sample sheet, per-SG destinations, pre-flight, ALIGN, somalier, registration, run records
+main.nf                       params validation, run-records check, sample sheet, per-SG destinations, pre-flight, ALIGN, somalier, CRAM QC, registration, run records
 nextflow.config               params, profiles (standard: Google Batch, docker, test)
 nextflow_schema.json          launch-form schema (main.nf does its own validation)
 conf/base.config              containers, resources, error strategy, per-SG resource labels, publishDir
 subworkflows/local/align/     ALIGN
-modules/local/<process>/      build_samplesheet, sort_index, align_to_cram, align_shard, merge_to_cram, somalier_extract, register_analysis, write_run_records
+subworkflows/local/cram_qc/   CRAM_QC
+modules/local/<process>/      build_samplesheet, sort_index, align_to_cram, align_shard, merge_to_cram, somalier_extract, verifybamid, samtools_stats, picard_metrics, register_analysis, write_run_records
 bin/build_samplesheet.py      cohorts or SG IDs, from any datasets -> sample sheet (needs only `metamist`)
 bin/align_stream.sh           per-kind input -> bwa-mem3 BAM stream
 bin/dedup_to_cram.sh          dupblaster -> sort -> CRAM 3.0 + metrics
@@ -275,9 +315,12 @@ paths and projects (including `accessLevel test`), injected failures, the run-re
 clashes, -resume, cohorts and SG ID modes, a sheet row without a dataset, per-SG resource labels and
 parameter validation.
 
+**CRAM QC** ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)) is wired and stub-tested (48 tests),
+but its scripts haven't run on real data.
+
 **Not done yet:**
-1. **A real run on a small test dataset.** Only stubs have run so far, so the process scripts, images,
-   resources, Metamist access from Batch and registration are all untested.
+1. **A real run on a small test dataset.** Only stubs have run so far, so the process scripts (alignment and
+   CRAM QC), images, resources, Metamist access from Batch and registration are all untested.
 2. **Tiny real-data fixtures** (a small contig with its index, and a few thousand pairs as FQ/BAM/CRAM)
    for a local docker run.
 3. **Genotyping:** consume `ALIGN.out.all_crams`, and bring back the "a `gvcf` analysis means the SG is

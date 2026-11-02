@@ -1,6 +1,6 @@
 """Offline `nextflow run -stub` checks of main.nf's wiring: branching by input kind, lane/shard fan-out and
-merges, per-dataset published paths, registration, the run-records and pre-flight clash checks and -resume,
-and the run records. The SGs span two datasets (conftest.cohort_sgs). Placeholder files stand in for data,
+merges, CRAM QC, per-dataset published paths, registration, the run-records and pre-flight clash checks and
+-resume, and the run records. The SGs span two datasets (conftest.cohort_sgs). Placeholder files stand in for data,
 and the tests are skipped when nextflow isn't on PATH."""
 
 import csv
@@ -30,8 +30,29 @@ def cram_dir(out: Path, ds: str, prefix: str = '') -> Path:
     return out / ds / prefix / 'cram'
 
 
-def metrics_dir(out: Path, ds: str, prefix: str = '') -> Path:
-    return out / ds / prefix / 'qc' / 'markduplicates_metrics'
+def qc_dir(out: Path, ds: str, sg_id: str, prefix: str = '') -> Path:
+    return out / ds / prefix / 'cram_qc' / sg_id
+
+
+# an SG's CRAM QC files, by their secondary-file key in its cram_qc analysis
+def qc_files(sg_id: str, coverage: str = 'wgs') -> dict[str, str]:
+    return {
+        'verifybamid': f'{sg_id}.verify-bamid.selfSM',
+        'samtools_stats': f'{sg_id}.samtools-stats',
+        **{m: f'{sg_id}.{m}' for m in METRICS},
+        f'picard_{coverage}_metrics': f'{sg_id}.picard-{coverage}-metrics',
+        'markduplicates_metrics': f'{sg_id}.markduplicates-metrics',
+    }
+
+
+METRICS = [
+    'alignment_summary_metrics',
+    'base_distribution_by_cycle_metrics',
+    'insert_size_metrics',
+    'quality_by_cycle_metrics',
+    'quality_yield_metrics',
+]
+QC_PROCESSES = ['VERIFYBAMID', 'SAMTOOLS_STATS', 'PICARD_METRICS']
 
 
 def run_dir(out: Path, ar_guid: str = 'local-test') -> Path:
@@ -49,22 +70,28 @@ def run(tmp_path, cohort_sgs):
     refs = tmp_path / 'refs'
     for name in ['ref.fasta', 'ref.fasta.fai', *(f'ref.fasta.{ext}' for ext in ['bwt.2bit.64', 'amb', 'ann', 'pac'])]:
         touch(refs / name)
+    touch(refs / 'ref.dict')
     touch(refs / 'sites.vcf.gz')
+    # CRAM QC's references, for both sequencing types
+    qc_refs = [f'{seq}_contam_{ext}' for seq in ['genome', 'exome'] for ext in ['ud', 'bed', 'mu']]
+    qc_refs += ['genome_coverage_interval_list', 'exome_evaluation_interval_list']
+    for name in qc_refs:
+        touch(refs / name)
 
     def _run(
         *args: str,
         sequencing_type: str = 'genome',
         inputs: tuple = ('--samplesheet', str(sheet)),
         reference: tuple = ('--ref_fasta', str(refs / 'ref.fasta')),
-        profile: str = 'test',
         ar_guid: str = 'local-test',
+        omit: tuple = (),  # CRAM QC references left off the command line
     ):
         out = tmp_path / 'results'
         trace = tmp_path / 'trace.txt'
         trace.unlink(missing_ok=True)
         result = subprocess.run(
             [
-                'nextflow', 'run', str(MAIN_NF), '-stub', '-profile', profile,
+                'nextflow', 'run', str(MAIN_NF), '-stub', '-profile', 'test',
                 '-with-trace', str(trace),
                 *inputs,
                 '--output_root', str(out),
@@ -75,6 +102,8 @@ def run(tmp_path, cohort_sgs):
                 *reference,
                 '--somalier_sites', str(refs / 'sites.vcf.gz'),
                 '--aligned_ref_fasta', str(refs / 'masked.fasta'),
+                '--ref_fasta_dict', str(refs / 'ref.dict'),
+                *(arg for name in qc_refs if name not in omit for arg in (f'--{name}', str(refs / name))),
                 *args,
             ],
             cwd=tmp_path,
@@ -94,7 +123,7 @@ def task_names(tasks: list[dict], process: str) -> set[str]:
 
 
 def task_dir(tasks: list[dict], tmp_path: Path, name: str) -> Path:
-    """The work dir of the task with this name, e.g. 'REGISTER_ANALYSIS (CPG1)'."""
+    """The work dir of the task with this name, e.g. 'REGISTER_CRAM (CPG1)'."""
     workdir = next(t for t in tasks if t['name'].startswith(name))['hash']
     return next((tmp_path / 'work').glob(f'{workdir}*'))
 
@@ -108,15 +137,22 @@ def test_every_input_kind_is_aligned_published_and_registered(run):
     assert task_names(tasks, 'MERGE_TO_CRAM') == {'CPG1', 'CPG3', 'CPG4'}
     assert task_names(tasks, 'ALIGN_TO_CRAM') == {'CPG2', 'CPG6'}
     assert task_names(tasks, 'SORT_INDEX') == {'CPG4'}  # the unindexed BAM
-    # each new CRAM is fingerprinted, then registered once; the aligned SGs get no tasks, fingerprint or not
+    # each new CRAM is fingerprinted and QC'd, then registered once, and its QC once; the aligned SGs get no
+    # tasks, fingerprint or not
     assert task_names(tasks, 'SOMALIER_EXTRACT') == NEW
-    assert task_names(tasks, 'REGISTER_ANALYSIS') == NEW
+    for process in QC_PROCESSES:
+        assert task_names(tasks, process) == NEW
+    assert task_names(tasks, 'REGISTER_CRAM') == NEW
+    assert task_names(tasks, 'REGISTER_CRAM_QC') == NEW
 
-    # each SG goes to its own dataset, its somalier fingerprint beside the CRAM
+    # each SG goes to its own dataset, its somalier fingerprint beside the CRAM, and all its QC in one folder
     for ds, sg_ids in NEW_BY_DATASET.items():
         crams = {f'{s}.cram{ext}' for s in sg_ids for ext in ['', '.crai', '.somalier']}
         assert {p.name for p in cram_dir(out, ds).iterdir()} == crams
-        assert {p.name for p in metrics_dir(out, ds).iterdir()} == {f'{s}.markduplicates-metrics' for s in sg_ids}
+        assert {p.name for p in (out / ds / 'cram_qc').iterdir()} == sg_ids
+        for sg_id in sg_ids:
+            assert {p.name for p in qc_dir(out, ds, sg_id).iterdir()} == set(qc_files(sg_id).values())
+    assert not (out / PROJECT / 'qc').exists()
 
     # the run records go to the analysis dataset only
     index = read_tsv(run_dir(out) / 'crams.csv', sep=',')
@@ -136,13 +172,49 @@ def test_registration_uses_the_published_path_and_the_sgs_project(run, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     # one analysis per SG: the CRAM, with its index and fingerprint as secondary files
     for sg_id, ds in [('CPG1', PROJECT), ('CPG4', OTHER)]:
-        command = (task_dir(tasks, tmp_path, f'REGISTER_ANALYSIS ({sg_id})') / '.command.out').read_text()
+        command = (task_dir(tasks, tmp_path, f'REGISTER_CRAM ({sg_id})') / '.command.out').read_text()
         cram = cram_dir(out, ds) / f'{sg_id}.cram'
         assert f'--output {cram} --type cram --secondary index={cram}.crai somalier={cram}.somalier ' in command
         assert f'--sgs {sg_id} ' in command
         assert f'--project {ds} ' in command
         assert 'ar-guid=local-test' in command
         assert f'ref_fasta={tmp_path}/refs/ref.fasta' in command
+
+
+def test_cram_qc_is_registered_as_one_analysis_of_the_cram(run, tmp_path):
+    result, out, tasks = run('--register', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    # the CRAM is the primary file, and every QC file a secondary file
+    for sg_id, ds in [('CPG1', PROJECT), ('CPG4', OTHER)]:
+        command = (task_dir(tasks, tmp_path, f'REGISTER_CRAM_QC ({sg_id})') / '.command.out').read_text()
+        folder = qc_dir(out, ds, sg_id)
+        secondary = ' '.join(f'{key}={folder / name}' for key, name in qc_files(sg_id).items())
+        assert f'--output {cram_dir(out, ds) / f"{sg_id}.cram"} --type cram_qc --secondary {secondary} ' in command
+        assert f'--project {ds} --' in command
+        assert command.rstrip().endswith(f'--sgs {sg_id} --meta sequencing_type=genome ar-guid=local-test')
+
+
+def test_cram_qc_reads_the_alignment_reference_and_the_sequencing_types_resources(run, tmp_path):
+    result, _out, tasks = run(sequencing_type='exome')
+    assert result.returncode == 0, result.stdout + result.stderr
+    for process in QC_PROCESSES:
+        staged = task_dir(tasks, tmp_path, f'CRAM_QC:{process} (CPG3)') / 'ref'
+        assert {p.name for p in staged.iterdir()} == {'ref.fasta', 'ref.fasta.fai', 'ref.dict'}
+    verify = task_dir(tasks, tmp_path, 'CRAM_QC:VERIFYBAMID (CPG3)')
+    assert {'exome_contam_ud', 'exome_contam_bed', 'exome_contam_mu'} <= {p.name for p in verify.iterdir()}
+    picard = task_dir(tasks, tmp_path, 'CRAM_QC:PICARD_METRICS (CPG3)') / 'intervals'
+    assert [p.name for p in picard.iterdir()] == ['exome_evaluation_interval_list']
+
+
+def test_cram_qc_can_be_turned_off(run):
+    result, out, tasks = run('--cram_qc', 'false', '--register', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    for process in [*QC_PROCESSES, 'REGISTER_CRAM_QC']:
+        assert not task_names(tasks, process)
+    assert task_names(tasks, 'REGISTER_CRAM') == NEW
+    # the duplicate metrics come from alignment, so they're still published, alone in the QC folder
+    assert [p.name for p in qc_dir(out, PROJECT, 'CPG1').iterdir()] == ['CPG1.markduplicates-metrics']
+    assert (run_dir(out) / 'failed.csv').read_text() == 'sg_id,dataset,failed_at\n'
 
 
 def test_new_cram_is_fingerprinted_against_the_alignment_reference(run, tmp_path):
@@ -157,7 +229,7 @@ def test_test_access_level_registers_in_test_projects(run, tmp_path):
     result, out, tasks = run('--accessLevel', 'test', '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
     for sg_id, ds in [('CPG1', PROJECT), ('CPG4', OTHER)]:
-        command = (task_dir(tasks, tmp_path, f'REGISTER_ANALYSIS ({sg_id})') / '.command.out').read_text()
+        command = (task_dir(tasks, tmp_path, f'REGISTER_CRAM ({sg_id})') / '.command.out').read_text()
         assert f'--project {ds}-test ' in command
         # output_root decides the location, not the access level
         assert f'--output {cram_dir(out, ds) / f"{sg_id}.cram"} ' in command
@@ -169,18 +241,24 @@ def test_exomes_are_published_under_exome(run):
     for ds, sg_ids in NEW_BY_DATASET.items():
         assert {p.name for p in cram_dir(out, ds, 'exome').glob('*.cram')} == {f'{s}.cram' for s in sg_ids}
         assert len(list(cram_dir(out, ds, 'exome').glob('*.somalier'))) == len(sg_ids)
-        assert len(list(metrics_dir(out, ds, 'exome').iterdir())) == len(sg_ids)
+        for sg_id in sg_ids:
+            files = {p.name for p in qc_dir(out, ds, sg_id, 'exome').iterdir()}
+            assert files == set(qc_files(sg_id, coverage='hs').values())
         assert not cram_dir(out, ds).exists()
+        assert not (out / ds / 'cram_qc').exists()
 
 
 def test_failed_sgs_are_dropped_and_reported(run, tmp_path):
-    # a stub never fails, so fail from config: one shard of CPG3, CPG2's fingerprint and CPG6's registration
+    # a stub never fails, so fail from config: one shard of CPG3, CPG2's fingerprint, CPG6's registration,
+    # CPG1's samtools stats and CPG4's QC registration
     inject = tmp_path / 'fail.config'
     inject.write_text(
         'process {\n'
         "    withName: 'ALIGN_SHARD' { beforeScript = { meta.id == 'CPG3' && unit == 2 ? 'exit 1' : 'true' } }\n"
-        "    withName: 'REGISTER_ANALYSIS' { beforeScript = { meta.id == 'CPG6' ? 'exit 1' : 'true' } }\n"
+        "    withName: 'REGISTER_CRAM' { beforeScript = { meta.id == 'CPG6' ? 'exit 1' : 'true' } }\n"
         "    withName: 'SOMALIER_EXTRACT' { beforeScript = { meta.id == 'CPG2' ? 'exit 1' : 'true' } }\n"
+        "    withName: 'SAMTOOLS_STATS' { beforeScript = { meta.id == 'CPG1' ? 'exit 1' : 'true' } }\n"
+        "    withName: 'REGISTER_CRAM_QC' { beforeScript = { meta.id == 'CPG4' ? 'exit 1' : 'true' } }\n"
         '}\n',
     )
     result, out, tasks = run('-c', str(inject), '--register', 'true')
@@ -193,20 +271,26 @@ def test_failed_sgs_are_dropped_and_reported(run, tmp_path):
     # CPG2's CRAM is published, but without a fingerprint it isn't registered, and the next run clashes on it
     assert (cram_dir(out, PROJECT) / 'CPG2.cram').exists()
     assert not (cram_dir(out, PROJECT) / 'CPG2.cram.somalier').exists()
-    assert task_names(tasks, 'REGISTER_ANALYSIS') == NEW - {'CPG2', 'CPG3'}
+    assert task_names(tasks, 'REGISTER_CRAM') == NEW - {'CPG2', 'CPG3'}
+    # CRAM QC is all or nothing, and waits for the CRAM's own registration; a QC failure doesn't hold up the CRAM
+    assert 'CPG1' in task_names(tasks, 'REGISTER_CRAM')
+    assert task_names(tasks, 'REGISTER_CRAM_QC') == NEW - {'CPG1', 'CPG2', 'CPG3', 'CPG6'}
+    assert (qc_dir(out, PROJECT, 'CPG1') / 'CPG1.verify-bamid.selfSM').exists()
     failed = read_tsv(run_dir(out) / 'failed.csv', sep=',')
     assert [(r['sg_id'], r['dataset'], r['failed_at']) for r in failed] == [
+        ('CPG1', PROJECT, 'qc'),
         ('CPG2', PROJECT, 'somalier'),
         ('CPG3', PROJECT, 'align'),
+        ('CPG4', OTHER, 'register_qc'),
         ('CPG6', OTHER, 'register'),
     ]
     assert {r['sg_id'] for r in read_tsv(run_dir(out) / 'crams.csv', sep=',')} == NEW - {'CPG3'}
-    assert '3 SG(s) failed and were skipped' in result.stdout + result.stderr
+    assert '5 SG(s) failed and were skipped' in result.stdout + result.stderr
 
 
 def test_existing_outputs_fail_the_run_before_any_alignment(run):
     _result, out, _tasks = run()
-    touch(metrics_dir(out, OTHER) / 'CPG9.markduplicates-metrics')  # unrelated, ignored
+    touch(qc_dir(out, OTHER, 'CPG9') / 'CPG9.markduplicates-metrics')  # unrelated, ignored
     (cram_dir(out, OTHER) / 'CPG4.cram').unlink()  # one SG partly present still clashes on its index
 
     # a new arGuid, so the run-records check passes
@@ -214,12 +298,13 @@ def test_existing_outputs_fail_the_run_before_any_alignment(run):
     assert result.returncode != 0
     # log.warn/log.error go to stderr, or to stdout when nextflow detects an AI agent (e.g. CLAUDECODE is set)
     console = result.stdout + result.stderr
-    # 5 SGs x 4 outputs, less the deleted CRAM: a published but unregistered CRAM is a clash, never registered
-    assert '19 output(s) already exist' in console
+    # 5 SGs x 12 outputs, less the deleted CRAM: a published but unregistered CRAM is a clash, never registered
+    assert '59 output(s) already exist' in console
     assert f'{cram_dir(out, OTHER)}/CPG4.cram.crai' in console
     assert f'{cram_dir(out, PROJECT)}/CPG1.cram' in console
     assert f'{cram_dir(out, PROJECT)}/CPG1.cram.somalier' in console
-    assert f'{metrics_dir(out, PROJECT)}/CPG1.markduplicates-metrics' in console
+    assert f'{qc_dir(out, PROJECT, "CPG1")}/CPG1.markduplicates-metrics' in console
+    assert f'{qc_dir(out, PROJECT, "CPG1")}/CPG1.verify-bamid.selfSM' in console
     assert 'CPG9' not in console
     assert not [t for t in tasks if t['status'] == 'COMPLETED']
 
@@ -272,6 +357,7 @@ def test_sgids_mode_publishes_the_built_sheet(run):
         (('--cohorts', 'COH1'), 'Provide exactly one of --cohorts, --sgids or --samplesheet'),
         (('--sgids', 'CPG1'), 'Provide exactly one of --cohorts, --sgids or --samplesheet'),
         (('--dupblaster_extra_args',), '--dupblaster_extra_args must be a string of dupblaster arguments'),
+        (('--cram_qc', 'maybe'), "--cram_qc must be true or false, got 'maybe'"),
     ],
 )
 def test_invalid_params_fail_early(run, args, message):
@@ -309,7 +395,8 @@ def test_per_sg_tasks_are_labelled_with_the_sgs_dataset(run, tmp_path):
     inject = tmp_path / 'labels.config'
     inject.write_text(
         'process {\n'
-        "    withName: 'SORT_INDEX|ALIGN_TO_CRAM|ALIGN_SHARD|MERGE_TO_CRAM|SOMALIER_EXTRACT|REGISTER_ANALYSIS' {\n"
+        "    withName: 'SORT_INDEX|ALIGN_TO_CRAM|ALIGN_SHARD|MERGE_TO_CRAM|SOMALIER_EXTRACT|VERIFYBAMID|SAMTOOLS_STATS|"
+        "PICARD_METRICS|REGISTER_CRAM|REGISTER_CRAM_QC' {\n"
         '        beforeScript = { "echo LABEL=${task.resourceLabels.dataset}" }\n'
         '    }\n'
         '}\n',
@@ -317,8 +404,9 @@ def test_per_sg_tasks_are_labelled_with_the_sgs_dataset(run, tmp_path):
     result, _out, tasks = run('-c', str(inject), '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
     labelled = [t for t in tasks if not t['name'].startswith('WRITE_RUN_RECORDS')]
-    # SORT_INDEX 1, ALIGN_SHARD 6, MERGE_TO_CRAM 3, ALIGN_TO_CRAM 2, SOMALIER_EXTRACT 5, REGISTER_ANALYSIS 5
-    assert len(labelled) == 22
+    # SORT_INDEX 1, ALIGN_SHARD 6, MERGE_TO_CRAM 3, ALIGN_TO_CRAM 2, then 5 each of SOMALIER_EXTRACT, the three
+    # QC processes, REGISTER_CRAM and REGISTER_CRAM_QC
+    assert len(labelled) == 42
     for t in labelled:
         sg_id = t['name'].split('(')[1].rstrip(')').split(':')[0]
         # beforeScript's output goes to the task log, not .command.out
@@ -334,6 +422,28 @@ def test_workflow_needs_every_container(run, tmp_path):
     message = 'The workflow needs --align_container, --cpg_container and --somalier_container'
     assert message in result.stdout + result.stderr
     assert not tasks
+
+
+def test_cram_qc_needs_its_containers_and_references(run, tmp_path):
+    # the test profile sets placeholder containers, so unset one from config
+    unset = tmp_path / 'no_picard.config'
+    unset.write_text('params.picard_container = null\n')
+    result, _out, tasks = run('-c', str(unset))
+    assert result.returncode != 0
+    assert 'CRAM QC needs --verifybamid_container and --picard_container' in result.stdout + result.stderr
+    assert not tasks
+
+    # the references have gs:// defaults, so unset one from config and leave it off the command line
+    unset.write_text('params.genome_contam_mu = null\n')
+    result, _out, tasks = run('-c', str(unset), omit=('genome_contam_mu',))
+    assert result.returncode != 0
+    assert 'CRAM QC needs --genome_contam_mu (or --cram_qc false)' in result.stdout + result.stderr
+    assert not tasks
+    # an exome run doesn't need the genome references, and only CRAM QC needs any of them
+    for args, seq in [((), 'exome'), (('--cram_qc', 'false'), 'genome')]:
+        omit = ('genome_contam_mu',)
+        result, _out, _tasks = run('-c', str(unset), *args, sequencing_type=seq, omit=omit, ar_guid=seq)
+        assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_missing_required_params_fail_early(run, tmp_path):

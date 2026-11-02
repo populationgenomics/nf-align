@@ -1,14 +1,16 @@
 /*
  * Alignment of one sequencing type: Metamist cohorts or SGs, from any number of datasets -> sample sheet ->
- * bwa-mem3 + dupblaster -> CRAM, published to and registered in each SG's own dataset. Run records go to the
- * analysis dataset (params.dataset). See DESIGN.md.
+ * bwa-mem3 + dupblaster -> CRAM, fingerprinted and QC'd, published to and registered in each SG's own dataset. Run
+ * records go to the analysis dataset (params.dataset). See DESIGN.md.
  */
 
 include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
-include { REGISTER_ANALYSIS } from './modules/local/register_analysis'
+include { REGISTER_ANALYSIS as REGISTER_CRAM } from './modules/local/register_analysis'
+include { REGISTER_ANALYSIS as REGISTER_CRAM_QC } from './modules/local/register_analysis'
 include { WRITE_RUN_RECORDS } from './modules/local/write_run_records'
 include { SOMALIER_EXTRACT } from './modules/local/somalier_extract'
 include { ALIGN } from './subworkflows/local/align'
+include { CRAM_QC } from './subworkflows/local/cram_qc'
 
 /*
  * Output destinations. Each SG's are worked out here and carried in its meta: publishDir (conf/base.config),
@@ -35,11 +37,35 @@ def runDir() {
     "${datasetRoot(params.dataset)}/alignment_samplesheets/${params.arGuid}"
 }
 
-// each file ALIGN_TO_CRAM, MERGE_TO_CRAM and SOMALIER_EXTRACT write, by name -> where it goes under the SG's
-// output root. Plain String keys: a GString key would never match the filename publishDir looks up
+// `--cram_qc false` arrives as the string 'false', which Groovy treats as true
+def cramQcOn() {
+    params.cram_qc.toString().toBoolean()
+}
+
+// an SG's QC metrics, by their secondary-file key in its cram_qc analysis -> file name (ADR 0014). The duplicate
+// metrics come from alignment, so they're published even when CRAM QC is off
+def cramQcFiles(id) {
+    def coverage = params.sequencing_type == 'genome' ? 'wgs' : 'hs'
+    def qc = !cramQcOn() ? [:] : [
+        verifybamid: "${id}.verify-bamid.selfSM",
+        samtools_stats: "${id}.samtools-stats",
+        alignment_summary_metrics: "${id}.alignment_summary_metrics",
+        base_distribution_by_cycle_metrics: "${id}.base_distribution_by_cycle_metrics",
+        insert_size_metrics: "${id}.insert_size_metrics",
+        quality_by_cycle_metrics: "${id}.quality_by_cycle_metrics",
+        quality_yield_metrics: "${id}.quality_yield_metrics",
+        ("picard_${coverage}_metrics".toString()): "${id}.picard-${coverage}-metrics",
+    ]
+    (qc + [markduplicates_metrics: "${id}.markduplicates-metrics"]).collectEntries { key, name -> [(key): name.toString()] }
+}
+
+// each file the SG's tasks publish, by name -> where it goes under the SG's output root: the CRAM and its
+// companions in cram/, and every QC file in one cram_qc/<sg>/ folder (ADR 0014).
+// Plain String keys: a GString key would never match the filename publishDir looks up
 def publishPaths(id) {
-    ["cram/${id}.cram", "cram/${id}.cram.crai", "cram/${id}.cram.somalier", "qc/markduplicates_metrics/${id}.markduplicates-metrics"]
-        .collectEntries { rel -> [(rel.tokenize('/').last()): "${typePrefix()}${rel}".toString()] }
+    def cram = ["${id}.cram", "${id}.cram.crai", "${id}.cram.somalier"].collect { name -> "cram/${name}" }
+    def qc = cramQcFiles(id).values().collect { name -> "cram_qc/${id}/${name}" }
+    (cram + qc).collectEntries { rel -> [(rel.tokenize('/').last()): "${typePrefix()}${rel}".toString()] }
 }
 
 // the one place a published URI is built from meta
@@ -81,6 +107,26 @@ def validateParams() {
     if (!(params.register.toString() in ['true', 'false'])) {
         error("--register must be true or false, got '${params.register}'")
     }
+    if (!(params.cram_qc.toString() in ['true', 'false'])) {
+        error("--cram_qc must be true or false, got '${params.cram_qc}'")
+    }
+    if (cramQcOn()) {
+        if (!(params.verifybamid_container && params.picard_container)) {
+            error('CRAM QC needs --verifybamid_container and --picard_container (or --cram_qc false)')
+        }
+        def qc_missing = cramQcRefParams().values().findAll { name -> !params[name] }
+        if (qc_missing) {
+            error("CRAM QC needs ${qc_missing.collect { name -> '--' + name }.join(', ')} (or --cram_qc false)")
+        }
+    }
+}
+
+// the param names of the references CRAM QC reads, for the run's sequencing type: the alignment reference's
+// .dict, VerifyBamID's contamination resources, and Picard's interval list
+def cramQcRefParams() {
+    def contamination = ['ud', 'bed', 'mu'].collectEntries { ext -> [(ext): "${params.sequencing_type}_contam_${ext}".toString()] }
+    def intervals = params.sequencing_type == 'genome' ? 'genome_coverage_interval_list' : 'exome_evaluation_interval_list'
+    [dict: 'ref_fasta_dict'] + contamination + [intervals: intervals]
 }
 
 /*
@@ -158,6 +204,7 @@ workflow {
     def shards = params.realignment_shards.toInteger() ?: (params.sequencing_type == 'genome' ? 6 : 1)
     // likewise `--register false` arrives as the string 'false', which Groovy treats as true
     def register = params.register.toString().toBoolean()
+    def cram_qc = cramQcOn()
 
     // the FASTA and everything that sits beside it: its .fai, the bwa-mem3 index built with the FASTA as prefix,
     // and the .alt that makes alignment alt-aware. Staged side by side, so the FASTA's own name is the bwa-mem3
@@ -228,26 +275,63 @@ workflow {
         file(params.somalier_sites),
     )
 
+    // QC each newly aligned CRAM, alongside its fingerprint and apart from its registration: a QC failure never
+    // holds up the CRAM (ADR 0014). Only the FASTA, .fai and .dict are staged
+    def qc = channel.empty()
+    if (cram_qc) {
+        def refs = cramQcRefParams().collectEntries { key, name -> [(key): file(params[name])] }
+        qc = CRAM_QC(
+            ALIGN.out.cram,
+            channel.value([file(params.ref_fasta), file("${params.ref_fasta}.fai"), refs.dict]),
+            channel.value([refs.ud, refs.bed, refs.mu]),
+            channel.value(refs.intervals),
+            params.sequencing_type,
+        )
+    }
+
     // one analysis per SG: the CRAM, with its index and fingerprint as secondary files. A CRAM whose fingerprint
     // failed isn't registered (ADR 0012)
+    def wait_minutes = params.register_wait_minutes.toInteger()
     def registered = channel.empty()
+    def qc_registered = channel.empty()
     if (register) {
-        registered = REGISTER_ANALYSIS(
-            fingerprinted.map { meta, _somalier -> [meta, destination(meta, "${meta.id}.cram"), destination(meta, "${meta.id}.cram.somalier")] },
-            params.sequencing_type,
-            params.arGuid,
-            params.register_wait_minutes.toInteger(),
+        registered = REGISTER_CRAM(
+            fingerprinted.map { meta, _somalier ->
+                def companions = [index: "${meta.id}.cram.crai", somalier: "${meta.id}.cram.somalier"]
+                def analysis_meta = [sequencing_type: params.sequencing_type, 'ar-guid': params.arGuid, ref_fasta: meta.ref]
+                [meta, destination(meta, "${meta.id}.cram"), companions.collectEntries { key, name -> [(key): destination(meta, name)] }, analysis_meta]
+            },
+            'cram',
+            wait_minutes,
+        )
+
+        // and one cram_qc analysis per SG: the CRAM again, with every QC file as a secondary file. Only once the
+        // CRAM's own analysis exists, so it never points at an unregistered CRAM (ADR 0014)
+        qc_registered = REGISTER_CRAM_QC(
+            qc.map { meta, _files -> [meta.id, meta] }
+                .join(registered.map { meta -> [meta.id, true] })
+                .map { _id, meta, _registered ->
+                    def files = cramQcFiles(meta.id).collectEntries { key, name -> [(key): destination(meta, name)] }
+                    [meta, destination(meta, "${meta.id}.cram"), files, [sequencing_type: params.sequencing_type, 'ar-guid': params.arGuid]]
+                },
+            'cram_qc',
+            wait_minutes,
         )
     }
 
     // with errorStrategy 'ignore' a failed SG doesn't fail the run, so name each one and the first step it didn't
-    // get through: each SG is aligned, fingerprinted and registered
+    // get through: each SG is aligned, fingerprinted, registered, QC'd and has its QC registered
     // I'm not convinced by this whole mechanic, it's a lot of complexity for something we're able to check in the UI
-    def steps = [aligned: 'align', fingerprinted: 'somalier'] + (register ? [registered: 'register'] : [:])
+    def steps = [aligned: 'align', fingerprinted: 'somalier'] +
+        (register ? [registered: 'register'] : [:]) +
+        (cram_qc ? [qc_done: 'qc'] : [:]) +
+        (register && cram_qc ? [qc_registered: 'register_qc'] : [:])
     def failed = checked.map { meta, _r -> [meta.id, meta.dataset, 'to_align'] }
         .mix(ALIGN.out.cram.map { meta, _cram, _crai -> [meta.id, meta.dataset, 'aligned'] })
         .mix(fingerprinted.map { meta, _somalier -> [meta.id, meta.dataset, 'fingerprinted'] })
         .mix(registered.map { meta -> [meta.id, meta.dataset, 'registered'] })
+        .mix(qc.map { meta, _files -> [meta.id, meta.dataset, 'qc_done'] })
+        .mix(qc_registered.map { meta -> [meta.id, meta.dataset, 'qc_registered'] })
         .groupTuple(by: [0, 1])
         .flatMap { id, dataset, events ->
             def failed_at = steps.find { event, _step -> !(event in events) }?.value
