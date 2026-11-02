@@ -437,10 +437,5 @@ registration paths and projects (including `accessLevel test`), injected failure
 pre-flight clashes, `-resume`, cohorts and SG ID modes, a sheet row without a dataset, per-SG resource labels,
 QC-only SGs and parameter validation.
 
-**Not done yet:**
-1. **A real run on a small test dataset.** Only stubs have run so far, so the process scripts (alignment and
-   CRAM QC), images, resources, Metamist access from Batch and registration are all untested.
-2. **Tiny real-data fixtures** (a small contig with its index, and a few thousand pairs as FQ/BAM/CRAM)
-   for a local docker run.
-3. **Genotyping:** consume `ALIGN.out.all_crams`, and bring back the "a `gvcf` analysis means the SG is
-   done" rule in the sample sheet.
+**Done**, a real test on real data - alignmets are quick and cheap (compared with DRAGMAP). Still requires use
+of the generated CRAM & QC files downstream to validate.
