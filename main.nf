@@ -42,11 +42,6 @@ def publishPaths(id) {
         .collectEntries { rel -> [(rel.tokenize('/').last()): "${typePrefix()}${rel}".toString()] }
 }
 
-// an SG that's already aligned only gains a fingerprint
-def fingerprintPaths(id) {
-    publishPaths(id).subMap(["${id}.cram.somalier".toString()])
-}
-
 // the one place a published URI is built from meta
 def destination(meta, filename) {
     "${meta.outRoot}/${meta.publish[filename.toString()]}".toString()
@@ -117,29 +112,17 @@ def claimsFile() {
 
 /*
  * Fail before any alignment or fingerprinting if an output this run would publish already exists, in any SG's
- * dataset.
+ * dataset. Already-aligned SGs publish nothing, so they never get here.
  * publishDir's overwrite: false leaves such a file in place silently, and registration would then record a
- * file this run didn't write (ADR 0009).
+ * file this run didn't write. The run only ever registers what it wrote (ADR 0009, ADR 0012).
  * Metamist-built sheets leave out SGs with a registered CRAM, so a clash is most likely an unregistered CRAM.
- * When an SG's CRAM and index are both there, it's taken as aligned but unregistered (ADR 0011): it isn't
- * realigned, and only its fingerprint is checked. Its row becomes one 'unregistered' row pointing at that CRAM.
  * On -resume, outputs claimed by an earlier attempt of this session are expected, and are republished.
  */
 def checkNoExistingOutputs(rows) {
     def claims = claimsFile()
     def claimed = claims.exists() ? claims.readLines().toSet() : [] as Set
 
-    def unregistered = rows
-        .collect { meta, _r -> meta }
-        .unique { meta -> meta.id }
-        .findAll { meta ->
-            meta.kind != 'aligned' && ["${meta.id}.cram", "${meta.id}.cram.crai"].every { filename -> existsUnclaimed(destination(meta, filename), claimed) }
-        }
-        .collect { meta -> unregisteredRow(meta) }
-    def unregistered_ids = unregistered.collect { meta, _r -> meta.id }.toSet()
-    def checked = rows.findAll { meta, _r -> !(meta.id in unregistered_ids) } + unregistered
-
-    def outputs = checked
+    def outputs = rows
         .collect { meta, _r -> meta }
         .unique { meta -> meta.id }
         .collectMany { meta -> meta.publish.keySet().collect { filename -> destination(meta, filename) } }
@@ -150,27 +133,14 @@ def checkNoExistingOutputs(rows) {
             "Register or delete them, then rerun:\n  ${existing.join('\n  ')}"
         )
     }
-    if (unregistered_ids) {
-        log.info("${unregistered_ids.size()} SG(s) have an unregistered CRAM, to be fingerprinted and registered: ${unregistered_ids.sort().join(', ')}")
-    }
     claims.parent.mkdirs()
     claims.text = (claimed + outputs).join('\n')
-    return checked
+    return rows
 }
 
 // an existing output that no earlier attempt of this session published
 def existsUnclaimed(uri, claimed) {
     !(uri in claimed) && file(uri).exists()
-}
-
-/*
- * The one row of an SG whose CRAM an earlier nf-align run published but never registered. That CRAM was
- * aligned to ref_fasta, whatever the SG's input was, and only its fingerprint is still to be published
- */
-def unregisteredRow(meta) {
-    def cram = destination(meta, "${meta.id}.cram")
-    def row = [sg_id: meta.id, dataset: meta.dataset, kind: 'unregistered', reads: cram, reads_index: "${cram}.crai".toString(), reads_ref: params.ref_fasta]
-    [meta + [kind: 'unregistered', units: 1, ref: params.ref_fasta, publish: fingerprintPaths(meta.id)], row]
 }
 
 // error() inside a channel operator reaches the console only as "Unexpected error", so log the reason first
@@ -232,8 +202,8 @@ workflow {
                 dataset: r.dataset,
                 project: metamistProject(r.dataset),
                 outRoot: datasetRoot(r.dataset),
-                // an aligned SG can only gain a fingerprint
-                publish: aligned ? fingerprintPaths(r.sg_id) : publishPaths(r.sg_id),
+                // an aligned SG's CRAM is already registered, fingerprint or not, so nothing is published
+                publish: aligned ? [:] : publishPaths(r.sg_id),
             ]
             [meta, r]
         }
@@ -244,77 +214,49 @@ workflow {
 
     // hold every row until the whole sheet has been checked, so a clash fails the run before any work starts
     // this scenario covers alignment outputs which exist in GCS but haven't been registered. We don't want to attempt
-    // regenaration/overwriting, but they would appear in the samplesheet based on the metamist-only logic.
-    // An aligned SG without a fingerprint (an empty or missing somalier column) is gapfilled, so it's checked too.
-    // An SG whose CRAM is published but unregistered comes out as kind 'unregistered', to be fingerprinted
+    // regenaration/overwriting, or to register files this run didn't write, so they fail the run
     def checked = rows.to_align
-        .mix(rows.aligned.filter { _meta, r -> !r.somalier })
         .toList()
         .flatMap { items -> checkNoExistingOutputs(items) }
-        .branch { meta, _r ->
-            to_fingerprint: meta.kind in ['aligned', 'unregistered']
-            to_align: true
-        }
 
-    ALIGN(checked.to_align, rows.aligned, reference, shards, params.dupblaster_extra_args)
+    ALIGN(checked, rows.aligned, reference, shards, params.dupblaster_extra_args)
 
-    // fingerprint each newly aligned CRAM, and each existing CRAM without one, against the reference it was written
-    // with. Only the FASTA and .fai are staged, not the bwa-mem3 index
-    def new_crams = ALIGN.out.cram.map { meta, cram, crai -> [meta + [ref: params.ref_fasta], cram, crai] }
-    def unregistered_crams = checked.to_fingerprint.filter { meta, _r -> meta.kind == 'unregistered' }
+    // fingerprint each newly aligned CRAM against ref_fasta, which it was written with. Only the FASTA and .fai
+    // are staged, not the bwa-mem3 index
     def fingerprinted = SOMALIER_EXTRACT(
-        new_crams
-            .mix(checked.to_fingerprint.map { meta, r -> [meta, file(r.reads), file(r.reads_index)] })
-            .map { meta, cram, crai -> [meta, cram, crai, file(meta.ref), file("${meta.ref}.fai")] },
+        ALIGN.out.cram.map { meta, cram, crai -> [meta + [ref: params.ref_fasta], cram, crai, file(params.ref_fasta), file("${params.ref_fasta}.fai")] },
         file(params.somalier_sites),
     )
 
-    // one task per output: a CRAM is registered as soon as it's published (or found unregistered), whatever
-    // becomes of its fingerprint, and a fingerprint likewise
+    // one analysis per SG: the CRAM, with its index and fingerprint as secondary files. A CRAM whose fingerprint
+    // failed isn't registered (ADR 0012)
     def registered = channel.empty()
     if (register) {
         registered = REGISTER_ANALYSIS(
-            new_crams
-                .map { meta, _cram, _crai -> [meta, 'cram', destination(meta, "${meta.id}.cram"), meta.ref] }
-                .mix(unregistered_crams.map { meta, r -> [meta, 'cram', r.reads, meta.ref] })
-                .mix(fingerprinted.map { meta, _somalier -> [meta, 'somalier', destination(meta, "${meta.id}.cram.somalier"), meta.ref] }),
+            fingerprinted.map { meta, _somalier -> [meta, destination(meta, "${meta.id}.cram"), destination(meta, "${meta.id}.cram.somalier")] },
             params.sequencing_type,
             params.arGuid,
             params.register_wait_minutes.toInteger(),
         )
     }
 
-    // with errorStrategy 'ignore' a failed SG doesn't fail the run, so name each one and the step it failed at.
-    // The CRAM (aligned, registered) and its fingerprint (extracted, registered) are separate outputs, each
-    // reported at the first step it didn't get through, so an SG can have a row for each
-    def failed = checked.to_align.map { meta, _r -> [meta.id, meta.dataset, 'to_align'] }
-        .mix(checked.to_fingerprint.map { meta, _r -> [meta.id, meta.dataset, "to_fingerprint_${meta.kind}".toString()] })
+    // with errorStrategy 'ignore' a failed SG doesn't fail the run, so name each one and the first step it didn't
+    // get through: each SG is aligned, fingerprinted and registered
+    // I'm not convinced by this whole mechanic, it's a lot of complexity for something we're able to check in the UI
+    def steps = [aligned: 'align', fingerprinted: 'somalier'] + (register ? [registered: 'register'] : [:])
+    def failed = checked.map { meta, _r -> [meta.id, meta.dataset, 'to_align'] }
         .mix(ALIGN.out.cram.map { meta, _cram, _crai -> [meta.id, meta.dataset, 'aligned'] })
         .mix(fingerprinted.map { meta, _somalier -> [meta.id, meta.dataset, 'fingerprinted'] })
-        .mix(registered.map { meta, type -> [meta.id, meta.dataset, "registered_${type}".toString()] })
+        .mix(registered.map { meta -> [meta.id, meta.dataset, 'registered'] })
         .groupTuple(by: [0, 1])
         .flatMap { id, dataset, events ->
-            def new_sg = 'to_align' in events
-            // a new CRAM is aligned and registered, an unregistered one only registered, an aligned one neither
-            def cram_steps = new_sg ? [aligned: 'align'] : [:]
-            if (register && (new_sg || 'to_fingerprint_unregistered' in events)) {
-                cram_steps += [registered_cram: 'register']
-            }
-            // a fingerprint needs a CRAM: one that failed to align is reported at 'align' alone
-            def somalier_steps = (!new_sg || 'aligned' in events) ? [fingerprinted: 'somalier'] : [:]
-            if (register && somalier_steps) {
-                somalier_steps += [registered_somalier: 'register_somalier']
-            }
-            [cram_steps, somalier_steps]
-                .collect { steps -> steps.find { event, _step -> !(event in events) }?.value }
-                .findAll { failed_at -> failed_at }
-                .collect { failed_at -> [sg_id: id, dataset: dataset, failed_at: failed_at] }
+            def failed_at = steps.find { event, _step -> !(event in events) }?.value
+            failed_at ? [[sg_id: id, dataset: dataset, failed_at: failed_at]] : []
         }
     failed.toList().subscribe { records ->
         if (records) {
-            def by_id = records.groupBy { record -> record.sg_id }
-            log.warn("${by_id.size()} SG(s) failed and were skipped (see ${runDir()}/failed.csv): " +
-                by_id.collect { id, sg_records -> "${id} (${sg_records.collect { record -> record.failed_at }.join(', ')})" }.join(', '))
+            log.warn("${records.size()} SG(s) failed and were skipped (see ${runDir()}/failed.csv): " +
+                records.collect { record -> "${record.sg_id} (${record.failed_at})" }.join(', '))
         }
     }
 
@@ -323,7 +265,7 @@ workflow {
         [sg_id: meta.id, dataset: meta.dataset, cram: destination(meta, "${meta.id}.cram"), crai: destination(meta, "${meta.id}.cram.crai")]
     }
     // sorted, so the records don't depend on task completion order and -resume finds the task cached.
-    // Each emits [] when nothing arrives, so both files are always written. An SG can fail twice, so then by step
-    def by_sg = { a, b -> a.sg_id <=> b.sg_id ?: a.failed_at <=> b.failed_at }
+    // Each emits [] when nothing arrives, so both files are always written
+    def by_sg = { a, b -> a.sg_id <=> b.sg_id }
     WRITE_RUN_RECORDS(crams.toSortedList(by_sg), failed.toSortedList(by_sg), runDir())
 }

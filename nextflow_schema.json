@@ -78,7 +78,7 @@
                 },
                 "somalier_sites": {
                     "type": "string",
-                    "description": "Sites VCF that somalier extract fingerprints each CRAM at: newly aligned ones, and already-aligned ones without a fingerprint."
+                    "description": "Sites VCF that somalier extract fingerprints each newly aligned CRAM at."
                 }
             }
         },
@@ -89,7 +89,7 @@
                 "register": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Register each published CRAM as a Metamist 'cram' analysis, and each fingerprint as a 'somalier' analysis."
+                    "description": "Register each published CRAM as one Metamist 'cram' analysis, with its index and somalier fingerprint as secondary files."
                 },
                 "register_wait_minutes": {
                     "type": "integer",

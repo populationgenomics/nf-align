@@ -45,19 +45,17 @@ There is no `outputDir`: every destination is worked out per SG (see Outputs). T
 run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (or --samplesheet)
                                                              ▼
           sample sheet ─ parse, per-SG destinations into meta ─┬─ aligned ────────────────────────────▶ (all_crams, for genotyping)
-                                                               ├─ aligned, no somalier ─┐
-                                                               └─ to align ─────────────┴─ pre-flight ─┬─ ALIGN ─ publishDir: CRAM, .crai, metrics → SG's dataset bucket
-                                                                                                       └─ SOMALIER_EXTRACT (new, gapfilled and unregistered CRAMs) ─ publishDir: .somalier → SG's dataset bucket
-                                                       then REGISTER_ANALYSIS (once per CRAM and per somalier, SG's dataset)
-                                                       and  WRITE_RUN_RECORDS (crams.csv, failed.csv → analysis dataset bucket)
+                                                               └─ to align ─ pre-flight ─ ALIGN ─ publishDir: CRAM, .crai, metrics → SG's dataset bucket
+                                                                                            └─ SOMALIER_EXTRACT ─ publishDir: .somalier → SG's dataset bucket
+                                                                                                                └─ REGISTER_ANALYSIS (one cram analysis per SG, SG's dataset)
+                                                       then WRITE_RUN_RECORDS (crams.csv, failed.csv → analysis dataset bucket)
 ```
 
 ### 1. Sample sheet (`BUILD_SAMPLESHEET`, `bin/build_samplesheet.py`)
 
 - One GraphQL query, using the top-level `cohorts(id:)` or `sequencingGroups(id:)` lookup, so it isn't
   limited to one project. It fetches cohort status and the cohorts' SGs (`--cohorts`), or the named SGs
-  directly (`--sgids`), with each SG's project, assay meta and completed, active `cram` and `somalier`
-  analyses. The
+  directly (`--sgids`), with each SG's project, assay meta and completed, active `cram` analyses. The
   script takes `--access-level`, not a project.
 - Cohorts that are missing (or not visible to the run's credentials), inactive or empty fail the run. So
   does an SG whose project doesn't match the access level: a production project in a test run, or a
@@ -69,8 +67,8 @@ run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (or --s
 - Read locations are used **exactly as Metamist stores them**.
 - Each SG gets one row per alignment unit, with a `kind` (glossary): `fastq` and `fastq_ora` (one row
   per lane), `cram` or `bam` (one row), or `aligned` (it already has a CRAM analysis; one row pointing at
-  that CRAM). An `aligned` row's `somalier` is the latest `somalier` analysis's output, or empty if it has
-  none, and then the CRAM is fingerprinted (**gapfilled**).
+  that CRAM). An `aligned` row's `somalier` is that CRAM analysis's `somalier` secondary file, or empty if it
+  has none. It's for reference only: an aligned SG is never fingerprinted ([ADR 0012](adr/0012-one-analysis-per-cram.md)).
 - Each row records the SG's `dataset`: its project, with any `-test` removed.
 - A run with no in-scope SG fails.
 - The sheet is published to `alignment_samplesheets/<arGuid>/samplesheet.tsv` in the analysis dataset
@@ -80,8 +78,7 @@ Columns: `sg_id, dataset, kind, n_units, unit, r1, r2, reads, reads_index, reads
 `reads_ref` is the reference it was written against, and is required: a CRAM is never decoded with `ref_fasta`.
 For ORA, it's the ORA reference tarball. For an `aligned` row, it's the `ref_fasta` its analysis's meta records
 (nf-align records it); if empty, `aligned_ref_fasta` (default: the DRAGEN-masked FASTA the CRAMs made before
-nf-align used, ADR 0006) is assumed. A `--samplesheet` input without a `somalier` column has every `aligned`
-row gapfilled.
+nf-align used, ADR 0006) is assumed. `main.nf` doesn't read the `somalier` column.
 
 ### 2. Pre-flight
 
@@ -94,11 +91,10 @@ up front:
   `crams.csv` or `failed.csv`. This guards against an `arGuid` reused by hand while testing. It's skipped
   on `-resume`.
 - **Outputs**: before anything is aligned, every CRAM, `.crai`, `.somalier` and metrics URI that the run would
-  publish is checked in its SG's dataset bucket. If any exist, the run fails and lists them all. For a gapfilled
-  `aligned` row only the `.somalier` is checked, and other `aligned` rows are not checked: for those, an existing
-  CRAM is the expected state. An SG to be aligned whose CRAM and `.crai` both exist is unregistered: it becomes
-  one `unregistered` row pointing at that CRAM, and only its `.somalier` is checked
-  ([ADR 0011](adr/0011-register-and-fingerprint-unregistered-crams.md)).
+  publish is checked in its SG's dataset bucket. If any exist, the run fails and lists them all. `aligned` rows
+  are not checked: they publish nothing, and an existing CRAM is the expected state. An unregistered CRAM is a
+  clash like any other, because the run only registers files it wrote
+  ([ADR 0013](adr/0013-only-register-files-this-run-wrote.md)).
 
 A run that passes the check records the outputs it claims in `<workDir>/nf-align-claims/<sessionId>.txt`.
 `-resume` keeps the session ID, so a resumed run lets those outputs exist and republishes them from the
@@ -168,26 +164,27 @@ Run records go under the analysis dataset's output root, at
 | `crams.csv` (`sg_id, dataset, cram, crai`, the published URIs) | `WRITE_RUN_RECORDS`, a native (`exec:`) process that gets the collected records, sorted by SG |
 | `failed.csv` (`sg_id, dataset, failed_at`) | `WRITE_RUN_RECORDS` |
 
-Only newly aligned SGs are published, plus the fingerprints of gapfilled and unregistered SGs. A gapfilled fingerprint goes
-to the standard layout, `[exome/]cram/<sg>.cram.somalier`, even when the existing CRAM is somewhere else.
+Only newly aligned SGs are published.
 
 Each per-SG task's `dataset` resource label is `meta.dataset`, so its cost goes to the SG's dataset.
 `BUILD_SAMPLESHEET` and `WRITE_RUN_RECORDS` are labelled with the analysis dataset.
 
 ### 5. Registration (`REGISTER_ANALYSIS`)
 
-When `register` is true, this runs once per output: once per new or unregistered CRAM, and once per
-fingerprint (new, gapfilled or unregistered), in the SG's own Metamist project. A CRAM's registration doesn't
-wait for its fingerprint. It gets the output URI from `meta`, and polls for up to `register_wait_minutes` until the
-output (and a CRAM's `.crai`) exist, because publishing is asynchronous
+When `register` is true, this runs once per newly aligned SG, after its CRAM is fingerprinted, in the
+SG's own Metamist project. Each CRAM gets a single `cram` analysis, with its index and fingerprint as
+secondary files ([ADR 0012](adr/0012-one-analysis-per-cram.md)). A CRAM whose fingerprint failed isn't
+registered. The URIs come from `meta`, and the task polls for up to `register_wait_minutes` until the CRAM,
+`.crai` and `.somalier` all exist, because publishing is asynchronous
 ([ADR 0005](adr/0005-registration-as-a-polling-process.md)). It then runs:
 
 ```
 python3 -m cpg_utils.metamist_registration --project <SG's dataset>[-test] --output <cram> --type cram \
-    --secondary index=<cram>.crai --sgs <sg> --meta sequencing_type=<type> ar-guid=<arGuid> ref_fasta=<ref>
-python3 -m cpg_utils.metamist_registration --project <SG's dataset>[-test] --output <cram>.somalier \
-    --type somalier --sgs <sg> --meta sequencing_type=<type> ar-guid=<arGuid> ref_fasta=<CRAM's ref>
+    --secondary index=<cram>.crai somalier=<cram>.somalier --sgs <sg> \
+    --meta sequencing_type=<type> ar-guid=<arGuid> ref_fasta=<CRAM's ref>
 ```
+
+The fingerprint is found at `outputs.secondary_files.somalier.path` on the CRAM analysis.
 
 Metrics are not registered.
 
@@ -201,9 +198,9 @@ Metrics are not registered.
 - **`BUILD_SAMPLESHEET`**, **`WRITE_RUN_RECORDS`**, the run-records check and the pre-flight check fail the
   whole run.
 - **Reporting:** dropped SGs are written to `alignment_samplesheets/<arGuid>/failed.csv` with the step
-  they failed at, and logged as a warning. The CRAM (`align`, then `register`) and its fingerprint (`somalier`,
-  then `register_somalier`) are reported separately, so an SG can have two rows. A CRAM that failed to align
-  is reported at `align` alone. **The run still exits 0.**
+  they failed at, and logged as a warning. Each SG has one row, at the first step it didn't get through:
+  `align`, `somalier`, then `register`. An SG that failed at `somalier` or `register` has a published CRAM
+  but no analysis, and the next run's pre-flight check stops on it until it's registered or deleted by hand. **The run still exits 0.**
 
 ## Resources (`conf/base.config`)
 

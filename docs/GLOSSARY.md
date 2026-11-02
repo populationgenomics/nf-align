@@ -74,22 +74,17 @@ dataset the SG belongs to.
 _Avoid_: manifest, input sheet
 
 **Kind**:
-The form of an SG's input in the sample sheet: `fastq`, `fastq_ora`, `cram`, `bam`, or `aligned`. The
-pre-flight check can also turn an SG into kind `unregistered`.
+The form of an SG's input in the sample sheet: `fastq`, `fastq_ora`, `cram`, `bam`, or `aligned`.
 _Avoid_: reads_type (the Metamist assay field `kind` is derived from)
 
 **Already-aligned SG**:
 An SG with a completed, active CRAM analysis. It's carried through as kind `aligned` (for later
-genotyping) but never realigned, and its CRAM is never republished or re-registered. If it has no somalier
-fingerprint, one is made (gapfilled), published and registered.
+genotyping) but never realigned, refingerprinted, republished or re-registered, whether or not its CRAM
+analysis has a somalier fingerprint (ADR 0012).
 
-**Unregistered SG**:
-An SG with no CRAM analysis, whose CRAM and `.crai` an earlier run published to its destination anyway. It's
-carried as kind `unregistered`. It isn't realigned: its CRAM is fingerprinted, and the CRAM and fingerprint
-are registered separately (ADR 0011).
-
-**Gapfill**:
-Fingerprinting an already-aligned SG that has no completed, active `somalier` analysis.
+**Unregistered CRAM**:
+A CRAM at an SG's destination with no CRAM analysis, for example because the run that published it failed to
+fingerprint or register it. It's an output clash: nf-align only registers files it wrote (ADR 0013).
 
 **Lane**:
 One FASTQ R1/R2 pair, contributed by one assay.
@@ -160,7 +155,7 @@ The per-run directory `alignment_samplesheets/<ar-guid>/` in the analysis datase
 sample sheet, the index of published CRAMs, and the failed SGs.
 
 **Failed SG**:
-An SG that was dropped part-way through a run, at either the `align` or the `register` step. The rest of
+An SG that was dropped part-way through a run, at the `align`, `somalier` or `register` step. The rest of
 the run carries on, and the SG is listed in the run records.
 
 ### Combining
