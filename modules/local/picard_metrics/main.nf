@@ -7,10 +7,9 @@ process PICARD_METRICS {
     tag "${meta.id}"
 
     input:
-    tuple val(meta), path(cram), path(crai)
     // the CRAM's own reference, staged apart so it can't collide with the CRAM's name. Picard finds the .dict
     // beside the FASTA, by name
-    tuple path(fasta, stageAs: 'ref/*'), path(fai, stageAs: 'ref/*'), path(dict, stageAs: 'ref/*')
+    tuple val(meta), path(cram), path(crai), path(fasta, stageAs: 'ref/*'), path(fai, stageAs: 'ref/*'), path(dict, stageAs: 'ref/*')
     // genome: the coverage regions; exome: the evaluation regions, as both bait and target
     path intervals, stageAs: 'intervals/*'
     val sequencing_type

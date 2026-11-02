@@ -80,7 +80,12 @@ _Avoid_: reads_type (the Metamist assay field `kind` is derived from)
 **Already-aligned SG**:
 An SG with a completed, active CRAM analysis. It's carried through as kind `aligned` (for later
 genotyping) but never realigned, refingerprinted, republished or re-registered, whether or not its CRAM
-analysis has a somalier fingerprint (ADR 0012).
+analysis has a somalier fingerprint (ADR 0012). With `--qc_aligned`, one without CRAM QC is a QC-only SG.
+
+**QC-only SG**:
+An already-aligned SG whose CRAM has no `cram_qc` analysis, in a run with `--qc_aligned true`. It gets CRAM QC
+and nothing else, against its CRAM's own reference (ADR 0015).
+_Avoid_: QC gapfill SG, re-QC
 
 **Unregistered CRAM**:
 A CRAM at an SG's destination with no CRAM analysis, for example because the run that published it failed to
@@ -160,9 +165,10 @@ The rest of the run carries on, and the SG is listed in the run records once, at
 An SG that fails only at `qc` or `register_qc` still has its CRAM registered.
 
 **CRAM QC**:
-Quality-control metrics computed from one newly aligned CRAM, kept together in one folder per SG and
+Quality-control metrics computed from one CRAM (newly aligned, or a QC-only SG's), kept together in one folder per SG and
 recorded as one `cram_qc` analysis. Its primary file is the CRAM, and every metrics file is a secondary
-file. It's all or nothing: an SG either gets every file registered or no `cram_qc` analysis. It never
+file. It's all or nothing: an SG either gets every file registered or no `cram_qc` analysis (a QC-only
+SG's may lack the duplicate metrics, which aren't this run's). It never
 holds up the CRAM's own registration, and it's only registered after the CRAM is.
 _Avoid_: align QC, alignment QC, `qc` analysis (a different, dataset-level type)
 

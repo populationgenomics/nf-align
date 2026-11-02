@@ -19,7 +19,7 @@ Part B was decided during implementation and **has not been explicitly confirmed
 | All of an SG's QC files go in one `[exome/]cram_qc/<sg>/` folder | cpg-flow's per-tool `qc/<tool>/` folders | one CRAM's QC is in one place; nothing binds nf-align to the old paths yet |
 | CRAM QC is all or nothing, and registered only after the CRAM | register whatever succeeded, as soon as it's ready | consumers can rely on the set of files, and a `cram_qc` analysis never points at an unregistered CRAM |
 | Three QC processes, one per image | one per cpg-flow stage (four); one combined task | stages the CRAM three times, not four, without a custom image |
-| Already-aligned SGs aren't QC'd | gapfill their QC | as for fingerprints (ADR 0012): it would need a "has QC" check in the sample sheet |
+| Already-aligned SGs without CRAM QC are QC'd only with `--qc_aligned` ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)) | always gapfill; never | cpg-flow's CRAMs have no `cram_qc` analysis, so always gapfilling would QC every one of them in any cohort run |
 | Interval lists are re-headed through BED with the alignment `.dict` | unmasked-header copies of the lists | the same regions as cpg-flow, so metrics stay comparable |
 | `--cram_qc false` still publishes the duplicate metrics to `cram_qc/<sg>/` | publish them only with QC | they come from alignment, and have always been published |
 | Each SG's bucket derived from its dataset + `accessLevel`; `output_root` only for local/test runs | the launcher passes an output location | the bucket can't disagree with the SG or the access level |
@@ -128,3 +128,11 @@ Part B was decided during implementation and **has not been explicitly confirmed
     reference tuple is simpler than two.
 33. **`cram_qc` secondary files are ordered as the tools run, then the duplicate metrics.** The order only
     shows on the command line, and in Metamist if it keeps it.
+34. **A QC-only SG's `.dict` is derived from its FASTA's name** (`<name>.fasta`, `.fa` or `.fna` ->
+    `<name>.dict`), with no `aligned_ref_fasta_dict` param. Picard looks for it there anyway. A FASTA with
+    any other extension fails the row.
+35. **A `--samplesheet` without a `cram_qc` column has every aligned SG QC'd** with `--qc_aligned`. An empty
+    column and a missing one look the same.
+36. **`--qc_aligned true --cram_qc false` fails at launch**, rather than quietly doing nothing.
+37. **QC-only SGs aren't listed in `crams.csv`.** It lists the CRAMs the run aligned. A QC-only SG appears in
+    the run records only in `failed.csv`, if it fails.

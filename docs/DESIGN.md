@@ -71,12 +71,14 @@ run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (or --s
   per lane), `cram` or `bam` (one row), or `aligned` (it already has a CRAM analysis; one row pointing at
   that CRAM). An `aligned` row's `somalier` is that CRAM analysis's `somalier` secondary file, or empty if it
   has none. It's for reference only: an aligned SG is never fingerprinted ([ADR 0012](adr/0012-one-analysis-per-cram.md)).
+  Its `cram_qc` is the ID of its CRAM's latest completed, active `cram_qc` analysis (one whose primary file, `outputs.path`, is that
+  same CRAM), or empty. With `--qc_aligned`, an empty one makes the SG QC-only ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
 - Each row records the SG's `dataset`: its project, with any `-test` removed.
 - A run with no in-scope SG fails.
 - The sheet is published to `alignment_samplesheets/<arGuid>/samplesheet.tsv` in the analysis dataset
   bucket. A `--samplesheet` input is not republished, and must have a `dataset` column.
 
-Columns: `sg_id, dataset, kind, n_units, unit, r1, r2, reads, reads_index, reads_ref, somalier`. For a CRAM,
+Columns: `sg_id, dataset, kind, n_units, unit, r1, r2, reads, reads_index, reads_ref, somalier, cram_qc`. For a CRAM,
 `reads_ref` is the reference it was written against, and is required: a CRAM is never decoded with `ref_fasta`.
 For ORA, it's the ORA reference tarball. For an `aligned` row, it's the `ref_fasta` its analysis's meta records
 (nf-align records it); if empty, `aligned_ref_fasta` (default: the DRAGEN-masked FASTA the CRAMs made before
@@ -167,7 +169,8 @@ Run records go under the analysis dataset's output root, at
 | `crams.csv` (`sg_id, dataset, cram, crai`, the published URIs) | `WRITE_RUN_RECORDS`, a native (`exec:`) process that gets the collected records, sorted by SG |
 | `failed.csv` (`sg_id, dataset, failed_at`) | `WRITE_RUN_RECORDS` |
 
-Only newly aligned SGs are published.
+Only newly aligned SGs are published, apart from a QC-only SG's QC tools' files
+([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
 
 Each per-SG task's `dataset` resource label is `meta.dataset`, so its cost goes to the SG's dataset.
 `BUILD_SAMPLESHEET` and `WRITE_RUN_RECORDS` are labelled with the analysis dataset.
@@ -187,7 +190,14 @@ tasks, one per image, each staging the CRAM with the alignment reference's FASTA
   header matches the alignment reference whichever hg38 build it was made against.
 
 An SG comes out of `CRAM_QC` only if all three succeeded. A QC failure never touches the CRAM's own
-registration. Already-aligned SGs aren't QC'd.
+registration.
+
+Already-aligned SGs aren't QC'd unless `--qc_aligned true` is set
+([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)). Then each one whose sample sheet row has an
+empty `cram_qc` is a **QC-only SG**: its registered CRAM goes through `CRAM_QC` against the reference it was
+written with (`reads_ref`, or `aligned_ref_fasta`, with the `<name>.dict` beside the FASTA), and nothing else
+runs for it. Only the three tools' files are published, and the pre-flight check covers them. A run whose SGs
+are all aligned does only QC.
 
 ### 6. Registration (`REGISTER_CRAM`, `REGISTER_CRAM_QC`)
 
@@ -222,6 +232,11 @@ python3 -m cpg_utils.metamist_registration --project <SG's dataset>[-test] --out
 where `<dir>` is `[exome/]cram_qc/<sg>`. `cram_qc` is a Metamist analysis type of its own, apart from the
 dataset-level `qc` of cpg-flow's MultiQC reports, and has to exist in Metamist before a registering run.
 
+A QC-only SG's `cram_qc` analysis is registered as soon as its QC is done. Its `--output` is the registered
+CRAM, from the sample sheet's `reads`. Its duplicate metrics come from the run that aligned it, and are added
+only if they're in the SG's dataset at `[exome/]cram_qc/<sg>/` (nf-align) or `[exome/]qc/markduplicates_metrics/`
+(cpg-flow).
+
 ### 7. Failures
 
 - **Per-SG tasks:** an exit code of 137 or 140 (OOM) is retried twice, with memory scaled by the attempt
@@ -236,7 +251,9 @@ dataset-level `qc` of cpg-flow's MultiQC reports, and has to exist in Metamist b
   `align`, `somalier`, `register`, `qc`, then `register_qc` (steps that are switched off are left out). An SG
   that failed at `somalier` or `register` has a published CRAM but no analysis, and the next run's pre-flight
   check stops on it until it's registered or deleted by hand. An SG that failed at `qc` or `register_qc` has a
-  registered CRAM, so later runs take it as already aligned and never retry its QC. **The run still exits 0.**
+  registered CRAM, so later runs take it as already aligned. Only a `--qc_aligned` run retries its QC, once
+  its leftover QC files are deleted. A QC-only SG can only fail at `qc` or `register_qc`. **The run still
+  exits 0.**
 
 ## Resources (`conf/base.config`)
 
@@ -315,8 +332,9 @@ paths and projects (including `accessLevel test`), injected failures, the run-re
 clashes, -resume, cohorts and SG ID modes, a sheet row without a dataset, per-SG resource labels and
 parameter validation.
 
-**CRAM QC** ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)) is wired and stub-tested (48 tests),
-but its scripts haven't run on real data.
+**CRAM QC** ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)) is wired and stub-tested, as is
+`--qc_aligned` ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)) (58 tests). The QC scripts haven't
+run on real data.
 
 **Not done yet:**
 1. **A real run on a small test dataset.** Only stubs have run so far, so the process scripts (alignment and

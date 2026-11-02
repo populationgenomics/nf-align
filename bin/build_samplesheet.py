@@ -18,6 +18,9 @@ cpg-flow (cpg_flow.inputs, cpg_flow.metamist):
 - an SG with a completed, active 'cram' analysis is already aligned, and gets one 'aligned' row. That row
   carries the CRAM's reference (if its analysis records one), and its somalier fingerprint (if the analysis
   has one as a 'somalier' secondary file). main.nf leaves an aligned SG as it is, fingerprint or not
+- an aligned row also records the ID of its CRAM's completed, active 'cram_qc' analysis, if it has one: one
+  whose primary file (outputs.path) is that same CRAM, so QC of an earlier CRAM doesn't count. With
+  --qc_aligned, main.nf QCs an aligned SG that has none (ADR 0015)
 - read locations are used exactly as recorded in Metamist
 
     build_samplesheet.py --access-level standard --sequencing-type genome \\
@@ -35,11 +38,25 @@ from metamist.graphql import gql, query
 
 logger = logging.getLogger(__name__)
 
-COLUMNS = ['sg_id', 'dataset', 'kind', 'n_units', 'unit', 'r1', 'r2', 'reads', 'reads_index', 'reads_ref', 'somalier']
+COLUMNS = [
+    'sg_id',
+    'dataset',
+    'kind',
+    'n_units',
+    'unit',
+    'r1',
+    'r2',
+    'reads',
+    'reads_index',
+    'reads_ref',
+    'somalier',
+    'cram_qc',
+]
 SEQUENCING_TYPES = {'genome', 'exome'}
 ACCESS_LEVELS = {'full', 'standard', 'test'}
 
-# the SG fields both queries fetch: assay metadata, and any existing CRAM analyses with their secondary files
+# the SG fields both queries fetch: assay metadata, and any existing CRAM and CRAM QC analyses, with their
+# secondary files
 SG_FIELDS = """
 fragment SgFields on GraphQLSequencingGroup {
     id
@@ -53,10 +70,9 @@ fragment SgFields on GraphQLSequencingGroup {
     assays {
         meta
     }
-    analyses(type: {eq: "cram"}, status: {eq: COMPLETED}, active: {eq: true}) {
+    analyses(type: {in_: ["cram", "cram_qc"]}, status: {eq: COMPLETED}, active: {eq: true}) {
         id
         type
-        output
         outputs
         meta
     }
@@ -204,9 +220,15 @@ def fastq_rows(sg_id: str, meta: dict) -> list[dict]:
     return rows
 
 
+def get_primary_path(analysis: dict[str, str | dict[str, str]]) -> str | None:
+    """Get the primary path for an analysis - outputs.path."""
+    # null for an analysis without a file
+    return (analysis.get('outputs') or {}).get('path')
+
+
 def latest_analysis(analyses: list[dict], analysis_type: str) -> dict | None:
     """The latest analysis of this type that has an output, if any."""
-    found = sorted((a for a in analyses if a['type'] == analysis_type and a.get('output')), key=lambda a: a['id'])
+    found = sorted((a for a in analyses if a['type'] == analysis_type and get_primary_path(a)), key=lambda a: a['id'])
     return found[-1] if found else None
 
 
@@ -223,18 +245,23 @@ def rows_for(sg: dict) -> list[dict]:
     """Sample sheet rows for one SG: one 'aligned' row if it has a CRAM, else one per FASTQ lane, else one."""
     sg_id = sg['id']
     if cram := latest_analysis(sg['analyses'], 'cram'):
+        cram_qc = latest_analysis(
+            [a for a in sg['analyses'] if get_primary_path(a) == get_primary_path(cram)], 'cram_qc'
+        )
         return [
             {
                 'sg_id': sg_id,
                 'kind': 'aligned',
                 'n_units': 1,
                 'unit': 1,
-                'reads': cram['output'],
-                'reads_index': f'{cram["output"]}.crai',
+                'reads': get_primary_path(cram),
+                'reads_index': f'{get_primary_path(cram)}.crai',
                 # recorded by nf-align's registration; older CRAMs leave main.nf to assume --aligned_ref_fasta
                 'reads_ref': (cram.get('meta') or {}).get('ref_fasta', ''),
                 # empty for a CRAM registered without one, e.g. before nf-align fingerprinted
                 'somalier': secondary_file(cram, 'somalier'),
+                # empty if this CRAM has no CRAM QC registered, e.g. one aligned before nf-align
+                'cram_qc': str(cram_qc['id']) if cram_qc else '',
             },
         ]
 
@@ -305,9 +332,11 @@ def main(
     n_datasets = len({row['dataset'] for row in rows})
     n_aligned = sum(row['kind'] == 'aligned' for row in rows)
     n_unfingerprinted = sum(row['kind'] == 'aligned' and not row['somalier'] for row in rows)
+    n_unqcd = sum(row['kind'] == 'aligned' and not row['cram_qc'] for row in rows)
     logger.info(
         f'{sequencing_type} at access level {access_level}: {n_sgs} SGs from {n_datasets} dataset(s) '
-        f'({n_aligned} already aligned, {n_unfingerprinted} of them without a somalier fingerprint), '
+        f'({n_aligned} already aligned, {n_unfingerprinted} of them without a somalier fingerprint, '
+        f'{n_unqcd} without CRAM QC), '
         f'{len(rows)} rows -> {output}',
     )
 

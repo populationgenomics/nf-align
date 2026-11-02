@@ -134,6 +134,11 @@
                     "default": true,
                     "description": "Run VerifyBamID, samtools stats and Picard metrics on each newly aligned CRAM, publish them with the duplicate metrics to [exome/]cram_qc/<sg>/, and register them as one Metamist 'cram_qc' analysis. The duplicate metrics are published either way."
                 },
+                "qc_aligned": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Also QC each already-aligned SG whose current CRAM has no 'cram_qc' analysis, without realigning it: its QC tools' outputs are published to [exome/]cram_qc/<sg>/ and registered as a 'cram_qc' analysis of the registered CRAM, with its duplicate metrics if its aligning run left them in the SG's dataset. Needs cram_qc."
+                },
                 "genome_contam_ud": {
                     "type": "string",
                     "description": "VerifyBamID's UD contamination resource for genomes."

@@ -6,7 +6,7 @@ import csv
 import build_samplesheet
 import pytest
 from build_samplesheet import SamplesheetError, build_rows, fetch_cohort_sgs, fetch_sgs, rows_for, write_sheet
-from conftest import OTHER, PROJECT, cohort, cram_analysis, fastq_meta, sg
+from conftest import OTHER, PROJECT, cohort, cram_analysis, cram_qc_analysis, fastq_meta, sg
 from metamist.graphql import gql, validate
 
 
@@ -35,6 +35,7 @@ def test_rows_classify_each_input_kind(cohort_sgs):
     assert rows[5]['reads_index'].endswith('CPG5.cram.crai')
     assert rows[5]['somalier'].endswith('CPG5.cram.somalier')
     assert rows[7]['somalier'] == ''  # registered without one
+    assert (rows[5]['cram_qc'], rows[7]['cram_qc']) == ('2', '')
     assert [r['dataset'] for r in rows] == [PROJECT] * 4 + [OTHER] * 3 + [PROJECT]
 
 
@@ -62,13 +63,35 @@ def test_aligned_row_carries_the_reference_its_analysis_records():
     analyses = [cram_analysis(1, 'gs://b/CPG1.cram', ref_fasta='gs://refs/ref.fasta')]
     assert rows_for(sg('CPG1', analyses=analyses))[0]['reads_ref'] == 'gs://refs/ref.fasta'
     # an older CRAM's analysis records none, and main.nf falls back to --aligned_ref_fasta
-    analyses = [{'id': 1, 'type': 'cram', 'output': 'gs://b/CPG1.cram', 'outputs': None, 'meta': None}]
+    analyses = [{'id': 1, 'type': 'cram', 'outputs': {'path': 'gs://b/CPG1.cram'}, 'meta': None}]
     assert rows_for(sg('CPG1', analyses=analyses))[0]['reads_ref'] == ''
 
 
 def test_aligned_row_without_a_somalier_secondary_has_no_fingerprint():
     row = rows_for(sg('CPG1', analyses=[cram_analysis(1, 'gs://b/CPG1.cram')]))[0]
     assert (row['kind'], row['somalier']) == ('aligned', '')
+
+
+def test_aligned_row_records_its_crams_own_cram_qc_analysis():
+    analyses = [
+        cram_analysis(9, 'gs://b/new.cram'),
+        cram_qc_analysis(10, 'gs://b/new.cram'),
+        cram_qc_analysis(12, 'gs://b/new.cram'),
+    ]
+    assert rows_for(sg('CPG1', analyses=analyses))[0]['cram_qc'] == '12'
+    # QC of an earlier CRAM doesn't count for the current one
+    analyses = [
+        cram_analysis(9, 'gs://b/new.cram'),
+        cram_analysis(3, 'gs://b/old.cram'),
+        cram_qc_analysis(4, 'gs://b/old.cram'),
+    ]
+    assert rows_for(sg('CPG1', analyses=analyses))[0]['cram_qc'] == ''
+
+
+def test_cram_qc_without_a_cram_analysis_is_not_aligned():
+    meta = fastq_meta('gs://b/R1.fq.gz', 'gs://b/R2.fq.gz')
+    row = rows_for(sg('CPG1', [meta], analyses=[cram_qc_analysis(1, 'gs://b/CPG1.cram')]))[0]
+    assert row['kind'] == 'fastq'
 
 
 def test_analyses_without_output_are_ignored():

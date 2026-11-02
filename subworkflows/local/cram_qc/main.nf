@@ -1,6 +1,8 @@
 /*
- * CRAM QC: VerifyBamID, samtools stats and Picard metrics of each newly aligned CRAM, in parallel, one task per
- * tool's image. An SG is emitted only once all three have succeeded, so its CRAM QC is all or nothing (ADR 0014).
+ * CRAM QC: VerifyBamID, samtools stats and Picard metrics of each CRAM, in parallel, one task per tool's image. The
+ * CRAMs are newly aligned ones, and with --qc_aligned already-aligned ones too (ADR 0015), so each comes with the
+ * reference it was written against. An SG is emitted only once all three have succeeded, so its CRAM QC is all or
+ * nothing (ADR 0014).
  */
 
 include { VERIFYBAMID } from '../../../modules/local/verifybamid'
@@ -9,16 +11,15 @@ include { PICARD_METRICS } from '../../../modules/local/picard_metrics'
 
 workflow CRAM_QC {
     take:
-    crams           // [meta, cram, crai]
-    reference       // value: [fasta, fai, dict], the reference the CRAMs were written against
+    crams           // [meta, cram, crai, fasta, fai, dict], each CRAM with the reference it was written against
     contamination   // value: [ud, bed, mu], VerifyBamID's resources for the sequencing type
     intervals       // value: genome coverage, or exome evaluation, interval list
     sequencing_type // string: genome | exome
 
     main:
-    def verify = VERIFYBAMID(crams, reference, contamination, sequencing_type)
-    def stats = SAMTOOLS_STATS(crams, reference)
-    def picard = PICARD_METRICS(crams, reference, intervals, sequencing_type)
+    def verify = VERIFYBAMID(crams, contamination, sequencing_type)
+    def stats = SAMTOOLS_STATS(crams)
+    def picard = PICARD_METRICS(crams, intervals, sequencing_type)
 
     // keyed by SG ID; join drops an SG missing from any of the three
     def complete = verify.map { meta, selfsm -> [meta.id, meta, [selfsm]] }

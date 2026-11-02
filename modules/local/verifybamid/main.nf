@@ -3,9 +3,8 @@ process VERIFYBAMID {
     tag "${meta.id}"
 
     input:
-    tuple val(meta), path(cram), path(crai)
     // the CRAM's own reference, staged apart so it can't collide with the CRAM's name
-    tuple path(fasta, stageAs: 'ref/*'), path(fai, stageAs: 'ref/*'), path(dict, stageAs: 'ref/*')
+    tuple val(meta), path(cram), path(crai), path(fasta, stageAs: 'ref/*'), path(fai, stageAs: 'ref/*'), path(dict, stageAs: 'ref/*')
     // the 1000G contamination resources for the run's sequencing type
     tuple path(ud), path(bed), path(mu)
     val sequencing_type

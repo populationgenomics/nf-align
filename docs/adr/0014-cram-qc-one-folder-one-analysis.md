@@ -1,5 +1,8 @@
 # CRAM QC: one folder and one `cram_qc` analysis per CRAM
 
+**Status: partly superseded by [ADR 0015](0015-qc-already-aligned-crams-on-request.md).** With
+`--qc_aligned`, already-aligned SGs without CRAM QC get it too.
+
 Each newly aligned CRAM gets **CRAM QC**: VerifyBamID, `samtools stats`, Picard CollectMultipleMetrics,
 and Picard CollectWgsMetrics (genome) or CollectHsMetrics (exome). These are cpg-flow's `CramQc*` stages,
 run in the `CRAM_QC` subworkflow. All of an SG's metrics files, including the duplicate metrics from
@@ -41,5 +44,6 @@ reports.
   QC files. The CRAM is registered, so later runs treat the SG as already aligned. They don't realign it,
   don't trip on its QC files, and don't retry its QC, so it stays without CRAM QC until something
   gapfills it.
-- Already-aligned SGs don't get CRAM QC, as they don't get fingerprints (ADR 0012).
+- Already-aligned SGs don't get CRAM QC, as they don't get fingerprints (ADR 0012). Since ADR 0015 they can,
+  with `--qc_aligned`.
 - The `cram_qc` analysis type has to exist in Metamist before a registering run.

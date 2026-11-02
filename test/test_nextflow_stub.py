@@ -16,6 +16,7 @@ pytestmark = pytest.mark.skipif(shutil.which('nextflow') is None, reason='nextfl
 
 MAIN_NF = Path(__file__).parents[1] / 'main.nf'
 NEW = {'CPG1', 'CPG2', 'CPG3', 'CPG4', 'CPG6'}  # CPG5 and CPG7 already have a CRAM, CPG7 without a fingerprint
+QC_ONLY = 'CPG7'  # already aligned, without CRAM QC: QC'd with --qc_aligned, against --aligned_ref_fasta
 NEW_BY_DATASET = {PROJECT: {'CPG1', 'CPG2', 'CPG3'}, OTHER: {'CPG4', 'CPG6'}}
 DATASET = {sg_id: ds for ds, sg_ids in NEW_BY_DATASET.items() for sg_id in sg_ids}
 
@@ -71,6 +72,9 @@ def run(tmp_path, cohort_sgs):
     for name in ['ref.fasta', 'ref.fasta.fai', *(f'ref.fasta.{ext}' for ext in ['bwt.2bit.64', 'amb', 'ann', 'pac'])]:
         touch(refs / name)
     touch(refs / 'ref.dict')
+    # the reference of an already-aligned CRAM whose analysis doesn't record one, with its .dict beside it
+    for name in ['masked.fasta', 'masked.fasta.fai', 'masked.dict']:
+        touch(refs / name)
     touch(refs / 'sites.vcf.gz')
     # CRAM QC's references, for both sequencing types
     qc_refs = [f'{seq}_contam_{ext}' for seq in ['genome', 'exome'] for ext in ['ud', 'bed', 'mu']]
@@ -217,6 +221,94 @@ def test_cram_qc_can_be_turned_off(run):
     assert (run_dir(out) / 'failed.csv').read_text() == 'sg_id,dataset,failed_at\n'
 
 
+def qc_tool_files(sg_id: str, coverage: str = 'wgs') -> dict[str, str]:
+    """A QC-only SG's QC files: its CRAM QC tools' outputs, without the duplicate metrics alignment made."""
+    return {key: name for key, name in qc_files(sg_id, coverage).items() if key != 'markduplicates_metrics'}
+
+
+def existing_cram(tmp_path: Path, sg_id: str) -> Path:
+    """An already-aligned SG's registered CRAM (conftest.cohort_sgs)."""
+    return tmp_path / 'data' / 'existing' / f'{sg_id}.cram'
+
+
+def test_aligned_sgs_without_cram_qc_are_qcd_without_realigning(run, tmp_path):
+    result, out, tasks = run('--qc_aligned', 'true', '--register', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    # CPG7 is QC'd, and its QC registered, but it isn't realigned, fingerprinted or registered again. CPG5's CRAM
+    # has CRAM QC already, so it gets nothing
+    for process in [*QC_PROCESSES, 'REGISTER_CRAM_QC']:
+        assert task_names(tasks, process) == NEW | {QC_ONLY}
+    for process in ['ALIGN_TO_CRAM', 'MERGE_TO_CRAM', 'SOMALIER_EXTRACT', 'REGISTER_CRAM']:
+        assert not {name.split(':')[0] for name in task_names(tasks, process)} & {QC_ONLY, 'CPG5'}
+
+    # QC'd against the reference its CRAM was written with, which its analysis doesn't record
+    for process in QC_PROCESSES:
+        staged = task_dir(tasks, tmp_path, f'CRAM_QC:{process} ({QC_ONLY})') / 'ref'
+        assert {p.name for p in staged.iterdir()} == {'masked.fasta', 'masked.fasta.fai', 'masked.dict'}
+
+    # only its QC tools' files are published; its CRAM is the registered one, and there are no duplicate metrics
+    assert {p.name for p in qc_dir(out, PROJECT, QC_ONLY).iterdir()} == set(qc_tool_files(QC_ONLY).values())
+    assert not (cram_dir(out, PROJECT) / f'{QC_ONLY}.cram').exists()
+    assert not (out / OTHER / 'cram_qc' / 'CPG5').exists()
+    command = (task_dir(tasks, tmp_path, f'REGISTER_CRAM_QC ({QC_ONLY})') / '.command.out').read_text()
+    folder = qc_dir(out, PROJECT, QC_ONLY)
+    secondary = ' '.join(f'{key}={folder / name}' for key, name in qc_tool_files(QC_ONLY).items())
+    assert f'--output {existing_cram(tmp_path, QC_ONLY)} --type cram_qc --secondary {secondary} --sgs' in command
+    assert f'--project {PROJECT} --' in command
+
+    # the run records list only the CRAMs this run aligned
+    assert {r['sg_id'] for r in read_tsv(run_dir(out) / 'crams.csv', sep=',')} == NEW
+    assert (run_dir(out) / 'failed.csv').read_text() == 'sg_id,dataset,failed_at\n'
+
+
+def test_a_run_with_nothing_to_align_only_qcs(run, tmp_path):
+    sheet = tmp_path / 'sheet.tsv'
+    write_sheet([r for r in read_tsv(sheet) if r['kind'] == 'aligned'], str(sheet))
+    result, out, tasks = run('--qc_aligned', 'true', '--register', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    processes = {t['name'].split(' ')[0].split(':')[-1] for t in tasks}
+    assert processes == {*QC_PROCESSES, 'REGISTER_CRAM_QC', 'WRITE_RUN_RECORDS'}
+    assert task_names(tasks, 'REGISTER_CRAM_QC') == {QC_ONLY}
+    assert (run_dir(out) / 'crams.csv').read_text() == 'sg_id,dataset,cram,crai\n'
+
+
+@pytest.mark.parametrize('rel', ['cram_qc/CPG7', 'qc/markduplicates_metrics'])
+def test_qc_only_registration_takes_the_duplicate_metrics_its_aligning_run_left(run, tmp_path, rel):
+    # nf-align's own folder or cpg-flow's: not this run's file, so neither a clash nor republished
+    metrics = Path(touch(tmp_path / 'results' / PROJECT / rel / f'{QC_ONLY}.markduplicates-metrics'))
+    result, out, tasks = run('--qc_aligned', 'true', '--register', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    command = (task_dir(tasks, tmp_path, f'REGISTER_CRAM_QC ({QC_ONLY})') / '.command.out').read_text()
+    folder = qc_dir(out, PROJECT, QC_ONLY)
+    secondary = ' '.join(f'{key}={folder / name}' for key, name in qc_tool_files(QC_ONLY).items())
+    assert f'--secondary {secondary} markduplicates_metrics={metrics} --sgs' in command
+
+
+def test_existing_qc_files_of_a_qc_only_sg_fail_the_run(run, tmp_path):
+    # e.g. an earlier attempt at its QC that failed partway
+    touch(tmp_path / 'results' / PROJECT / 'cram_qc' / QC_ONLY / f'{QC_ONLY}.samtools-stats')
+    result, out, tasks = run('--qc_aligned', 'true')
+    assert result.returncode != 0
+    console = result.stdout + result.stderr
+    assert '1 output(s) already exist' in console
+    assert f'{qc_dir(out, PROJECT, QC_ONLY)}/{QC_ONLY}.samtools-stats' in console
+    assert not [t for t in tasks if t['status'] == 'COMPLETED']
+
+
+def test_failed_qc_of_a_qc_only_sg_is_reported(run, tmp_path):
+    inject = tmp_path / 'fail.config'
+    inject.write_text(
+        'process {\n'
+        f"    withName: 'PICARD_METRICS' {{ beforeScript = {{ meta.id == '{QC_ONLY}' ? 'exit 1' : 'true' }} }}\n"
+        '}\n',
+    )
+    result, out, tasks = run('-c', str(inject), '--qc_aligned', 'true', '--register', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert QC_ONLY not in task_names(tasks, 'REGISTER_CRAM_QC')
+    failed = read_tsv(run_dir(out) / 'failed.csv', sep=',')
+    assert [(r['sg_id'], r['dataset'], r['failed_at']) for r in failed] == [(QC_ONLY, PROJECT, 'qc')]
+
+
 def test_new_cram_is_fingerprinted_against_the_alignment_reference(run, tmp_path):
     # CPG3's input CRAM was written against old_ref.fasta, but its new CRAM against ref_fasta
     result, _out, tasks = run()
@@ -358,6 +450,8 @@ def test_sgids_mode_publishes_the_built_sheet(run):
         (('--sgids', 'CPG1'), 'Provide exactly one of --cohorts, --sgids or --samplesheet'),
         (('--dupblaster_extra_args',), '--dupblaster_extra_args must be a string of dupblaster arguments'),
         (('--cram_qc', 'maybe'), "--cram_qc must be true or false, got 'maybe'"),
+        (('--qc_aligned', 'maybe'), "--qc_aligned must be true or false, got 'maybe'"),
+        (('--qc_aligned', 'true', '--cram_qc', 'false'), "--qc_aligned needs CRAM QC, so it can't be combined"),
     ],
 )
 def test_invalid_params_fail_early(run, args, message):
