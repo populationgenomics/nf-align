@@ -319,6 +319,7 @@ workflow {
                 kind: r.kind,
                 units: r.n_units.toInteger(),
                 // an aligned CRAM whose analysis doesn't record its reference predates nf-align (ADR 0006)
+                // to revisit if we update legacy CRAM entries
                 ref: r.reads_ref ?: (aligned ? params.aligned_ref_fasta : params.ref_fasta),
                 dataset: r.dataset,
                 project: metamistProject(r.dataset),
