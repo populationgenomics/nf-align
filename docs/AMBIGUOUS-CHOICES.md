@@ -9,7 +9,9 @@ Part B was decided during implementation and **has not been explicitly confirmed
 | choice | the alternative | why this way |
 |---|---|---|
 | Hash shards, not region shards ([ADR 0003](adr/0003-read-name-hash-shards-not-regions.md)) | region shards, as the original brief said ("roughly by regions") | keeps mates together and covers unmapped reads |
-| Failed SGs are dropped and the run exits 0 ([ADR 0007](adr/0007-ignore-failed-sgs-and-report.md)) | `finish` / `terminate` | a single bad input shouldn't cost a cohort run |
+| Failed SGs are dropped and the run exits 0 ([ADR 0017](adr/0017-failed-sgs-are-dropped-not-reported.md)) | `finish` / `terminate` | a single bad input shouldn't cost a cohort run |
+| Failed SGs aren't reported ([ADR 0017](adr/0017-failed-sgs-are-dropped-not-reported.md)) | `failed.csv` with the step each SG failed at ([ADR 0007](adr/0007-ignore-failed-sgs-and-report.md)) | Seqera already lists the failed tasks, the bookkeeping was a large part of `main.nf`, and `-resume` is the recovery path |
+| The pre-flight check is a cached task ([ADR 0016](adr/0016-preflight-check-is-a-cached-task.md)) | a claims file in the work dir | Nextflow's cache already records that the check passed |
 | Already-aligned SGs stay in the sheet as `aligned` | leave them out until genotyping exists | genotyping is next, and they add no tasks |
 | Single-unit fast path (`ALIGN_TO_CRAM`) kept separate from shard + merge | always shard + merge, even for 1 unit | skips a name-sort and a BAM round trip |
 | One read group per SG (`ID=SM=<sg>`, `PL:ILLUMINA`) | one read group per lane (`<sg>.<unit>`) | one library per SG for dupblaster and downstream tools; lane information is lost |
@@ -28,7 +30,7 @@ Part B was decided during implementation and **has not been explicitly confirmed
 | An SG at the wrong access level fails the sample sheet step | skip it with a warning | a test run must never write to a `-main` bucket, and a full run never to a `-test` one |
 | Still one sequencing type per run | per-SG `exome/` prefix, mixed runs | resources, shard defaults and genotyping depend on it; a separate change if ever wanted |
 | `publishDir` for everything, including run records | keep `output {}` for run records | one publishing mechanism, not two |
-| `-resume` skips the run-records check | record run records in the claims file | simpler, and a resume keeps its `arGuid` by definition |
+| `-resume` skips the run-records check | make it part of the cached `PREFLIGHT` task | it has to run before the sample sheet is built, and a resume keeps its `arGuid` by definition |
 | The concurrent-run gap is accepted ([ADR 0009](adr/0009-never-overwrite-preflight-and-publishdir-no-overwrite.md)) | re-check existence just before each publish | a small race would remain anyway, and it adds a moving part |
 | No memory watchdog for OOM | monitor RSS and kill early | `pipefail` + record checks + OOM retry already cover the header-only failure mode |
 | bwa-mem3 index built outside the pipeline | an optional `BWA_MEM3_INDEX` process | needs ~76 GB once; not per-run work |
@@ -41,11 +43,10 @@ Part B was decided during implementation and **has not been explicitly confirmed
    `MERGE_TO_CRAM` asks for 24 GB (8 CPUs, so it fits an `*-standard-8`).
 2. **The index files are CSV, not TSV.** Originally this was because Nextflow only accepts `.csv`,
    `.json` or `.yaml` for workflow output index files. `WRITE_RUN_RECORDS` could now write TSV, but the
-   names `crams.csv` and `failed.csv` are kept so anything that already reads them keeps working. The
+   name `crams.csv` is kept so anything that already reads it keeps working. The
    sample sheet itself is still `samplesheet.tsv`.
-3. **`failed.csv` has a `failed_at` column** (`align`, `somalier` or `register`), so a failed registration isn't
-   confused with a failed alignment.
-4. **Registration is retried once, then ignored** (and reported in `failed.csv`).
+3. *(Removed: `failed.csv` and its `failed_at` column, ADR 0017.)*
+4. **Registration is retried once, then ignored.** `-resume` retries it again.
 5. **`BUILD_SAMPLESHEET` fails the run if no SG is in scope** (for example, every SG is the other
    sequencing type), rather than doing an empty run. A sheet where every SG is already aligned is still
    a valid run that does nothing.
@@ -70,7 +71,7 @@ Part B was decided during implementation and **has not been explicitly confirmed
 11. **The pre-flight check also covers `.crai` and metrics**, not just the CRAM. A half-published SG
     (index present, CRAM missing) still counts as a clash.
 12. **Run records live under `alignment_samplesheets/<arGuid>/` in the analysis dataset's bucket**, as
-    you specified for the sample sheet, so `crams.csv` and `failed.csv` sit next to it.
+    you specified for the sample sheet, so `crams.csv` sits next to it.
 13. **Both containers are required in every profile.** `validateParams()` fails the run at launch if
     `align_container` or `cpg_container` is unset. The `test` profile sets placeholder values, which a
     stub run never pulls.
@@ -98,7 +99,7 @@ Part B was decided during implementation and **has not been explicitly confirmed
     output, is published by `publishDir`. It needs no container and no VM.
 22. **`WRITE_RUN_RECORDS` fails the run** (`errorStrategy 'terminate'`), as `BUILD_SAMPLESHEET` does.
     Under the default `ignore`, a failure would have lost the run records without notice.
-23. **`crams.csv` and `failed.csv` rows are sorted by SG ID.** The records reach the process in task
+23. **`crams.csv` rows are sorted by SG ID.** The records reach the process in task
     completion order, so without sorting the input would change between attempts, and `-resume` would
     rerun the task.
 24. **The access-level check comes before the sequencing-type filter.** An SG at the wrong access level
@@ -134,5 +135,15 @@ Part B was decided during implementation and **has not been explicitly confirmed
 35. **A `--samplesheet` without a `cram_qc` column has every aligned SG QC'd** with `--qc_aligned`. An empty
     column and a missing one look the same.
 36. **`--qc_aligned true --cram_qc false` fails at launch**, rather than quietly doing nothing.
-37. **QC-only SGs aren't listed in `crams.csv`.** It lists the CRAMs the run aligned. A QC-only SG appears in
-    the run records only in `failed.csv`, if it fails.
+37. **QC-only SGs aren't listed in `crams.csv`.** It lists the CRAMs the run aligned, so a QC-only SG
+    doesn't appear in the run records at all.
+38. **Param defaults stay in `nextflow.config`; `main.nf` declares only their types.** `conf/base.config`
+    reads several params (containers, `arGuid`, `dataset`) while the config is parsed, before `main.nf`'s
+    `params {}` block exists, so the defaults can't move into the script. Each param is therefore named in
+    both files.
+39. **`BUILD_SAMPLESHEET` fills in `aligned_ref_fasta`**, so every `aligned` row has a `reads_ref`, and `main.nf`
+    never guesses an aligned CRAM's reference. A `--samplesheet` input must now give it for `aligned` rows, or
+    the run fails at launch.
+40. **Publishing routes files by name pattern** (`*.cram*` to `cramDir`, `*.markduplicates-metrics` and every QC
+    tool's output to `qcDir`), not by a per-file map. A new output file in one of those processes would be
+    published without being in `outputs(meta)`, so without a pre-flight check: add it to both.

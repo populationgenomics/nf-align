@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # A failed SG is dropped, and the run carries on and exits 0
 
 Per-SG tasks use `errorStrategy 'ignore'` once OOM retries are used up. In a cohort-sized run, one

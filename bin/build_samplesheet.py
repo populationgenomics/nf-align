@@ -16,22 +16,23 @@ cpg-flow (cpg_flow.inputs, cpg_flow.metamist):
   short-read of the requested sequencing type, fail the run, as they were asked for by name
 - reads are combined across an SG's assays, each assay contributing one FASTQ pair (or the CRAM/BAM)
 - an SG with a completed, active 'cram' analysis is already aligned, and gets one 'aligned' row. That row
-  carries the CRAM's reference (if its analysis records one), and its somalier fingerprint (if the analysis
-  has one as a 'somalier' secondary file). main.nf leaves an aligned SG as it is, fingerprint or not
+  carries the CRAM's reference: the one its analysis records, or --aligned-ref-fasta for a CRAM made before
+  nf-align recorded it (ADR 0006). And its somalier fingerprint, if the analysis has one as a 'somalier'
+  secondary file. main.nf leaves an aligned SG as it is, fingerprint or not
 - an aligned row also records the ID of its CRAM's completed, active 'cram_qc' analysis, if it has one: one
   whose primary file (outputs.path) is that same CRAM, so QC of an earlier CRAM doesn't count. With
   --qc_aligned, main.nf QCs an aligned SG that has none (ADR 0015)
 - read locations are used exactly as recorded in Metamist
 
     build_samplesheet.py --access-level standard --sequencing-type genome \\
-        --cohorts COH0001 COH0002 --output samplesheet.tsv
+        --cohorts COH0001 COH0002 --aligned-ref-fasta gs://.../masked.fasta --output samplesheet.tsv
     build_samplesheet.py --access-level test --sequencing-type genome \\
-        --sgids CPG0001 CPG0002 --output samplesheet.tsv
+        --sgids CPG0001 CPG0002 --aligned-ref-fasta gs://.../masked.fasta --output samplesheet.tsv
 """
 
 import csv
 import logging
-from argparse import ArgumentParser
+from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
 from metamist.graphql import gql, query
@@ -241,8 +242,11 @@ def secondary_file(analysis: dict, secondary_type: str) -> str:
     return secondary.get('path') or ''
 
 
-def rows_for(sg: dict) -> list[dict]:
-    """Sample sheet rows for one SG: one 'aligned' row if it has a CRAM, else one per FASTQ lane, else one."""
+def rows_for(sg: dict, aligned_ref_fasta: str) -> list[dict]:
+    """
+    Sample sheet rows for one SG: one 'aligned' row if it has a CRAM, else one per FASTQ lane, else one.
+    aligned_ref_fasta is the reference of a CRAM whose analysis doesn't record one.
+    """
     sg_id = sg['id']
     if cram := latest_analysis(sg['analyses'], 'cram'):
         cram_qc = latest_analysis(
@@ -256,8 +260,8 @@ def rows_for(sg: dict) -> list[dict]:
                 'unit': 1,
                 'reads': get_primary_path(cram),
                 'reads_index': f'{get_primary_path(cram)}.crai',
-                # recorded by nf-align's registration; older CRAMs leave main.nf to assume --aligned_ref_fasta
-                'reads_ref': (cram.get('meta') or {}).get('ref_fasta', ''),
+                # recorded by nf-align's registration; CRAMs made before it were written against aligned_ref_fasta
+                'reads_ref': (cram.get('meta') or {}).get('ref_fasta') or aligned_ref_fasta,
                 # empty for a CRAM registered without one, e.g. before nf-align fingerprinted
                 'somalier': secondary_file(cram, 'somalier'),
                 # empty if this CRAM has no CRAM QC registered, e.g. one aligned before nf-align
@@ -275,10 +279,10 @@ def rows_for(sg: dict) -> list[dict]:
     raise SamplesheetError(f'{sg_id}: unsupported reads_type {meta.get("reads_type")!r}')
 
 
-def build_rows(sgs: list[dict], access_level: str, sequencing_type: str) -> list[dict]:
+def build_rows(sgs: list[dict], access_level: str, sequencing_type: str, aligned_ref_fasta: str) -> list[dict]:
     """
     Rows for every in-scope SG, each SG once, with the SG's dataset. Reports every bad SG at once, not one
-    per run.
+    per run. aligned_ref_fasta is the reference of an aligned CRAM whose analysis doesn't record one.
     """
     rows: list[dict] = []
     seen: set[str] = set()
@@ -298,7 +302,7 @@ def build_rows(sgs: list[dict], access_level: str, sequencing_type: str) -> list
             )
             continue
         try:
-            rows.extend({'dataset': project.removesuffix('-test')} | row for row in rows_for(sg))
+            rows.extend({'dataset': project.removesuffix('-test')} | row for row in rows_for(sg, aligned_ref_fasta))
         except SamplesheetError as error:
             errors.append(str(error))
     if errors:
@@ -315,18 +319,13 @@ def write_sheet(rows: list[dict], path: str) -> None:
         writer.writerows(rows)
 
 
-def main(
-    access_level: str,
-    sequencing_type: str,
-    cohort_ids: list[str] | None,
-    sg_ids: list[str] | None,
-    output: str,
-) -> None:
-    if cohort_ids:
-        sgs = fetch_cohort_sgs(sorted(set(cohort_ids)))
+def main(args: Namespace) -> None:
+    access_level, sequencing_type, output = args.access_level, args.sequencing_type, args.output
+    if args.cohorts:
+        sgs = fetch_cohort_sgs(sorted(set(args.cohorts)))
     else:
-        sgs = fetch_sgs(sorted(set(sg_ids or [])), sequencing_type)
-    rows = build_rows(sgs, access_level, sequencing_type)
+        sgs = fetch_sgs(sorted(set(args.sgids)), sequencing_type)
+    rows = build_rows(sgs, access_level, sequencing_type, args.aligned_ref_fasta)
     write_sheet(rows, output)
     n_sgs = len({row['sg_id'] for row in rows})
     n_datasets = len({row['dataset'] for row in rows})
@@ -354,6 +353,10 @@ if __name__ == '__main__':
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument('--cohorts', nargs='+', help='Metamist cohort IDs')
     inputs.add_argument('--sgids', nargs='+', help='Metamist sequencing group IDs, queried directly')
+    parser.add_argument(
+        '--aligned-ref-fasta',
+        required=True,
+        help="the reference of an already-aligned CRAM whose analysis doesn't record one (ADR 0006)",
+    )
     parser.add_argument('--output', required=True, help='Sample sheet TSV to write')
-    args = parser.parse_args()
-    main(args.access_level, args.sequencing_type, args.cohorts, args.sgids, args.output)
+    main(parser.parse_args())

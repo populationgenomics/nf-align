@@ -8,6 +8,7 @@ process BUILD_SAMPLESHEET {
     val sequencing_type
     val cohorts
     val sgids
+    val aligned_ref_fasta // the reference of an aligned CRAM whose analysis doesn't record one
     val run_dir // only read by publishDir (conf/base.config)
 
     output:
@@ -21,6 +22,7 @@ process BUILD_SAMPLESHEET {
         --access-level ${access_level} \\
         --sequencing-type ${sequencing_type} \\
         ${ids} \\
+        --aligned-ref-fasta ${aligned_ref_fasta} \\
         --output samplesheet.tsv
     """
 

@@ -74,7 +74,7 @@
                 },
                 "aligned_ref_fasta": {
                     "type": "string",
-                    "description": "Reference an already-aligned CRAM is decoded with when its analysis doesn't record one: by default the DRAGEN-masked FASTA the CRAMs made before nf-align used. Needs <aligned_ref_fasta>.fai alongside."
+                    "description": "Reference an already-aligned CRAM is decoded with when its analysis doesn't record one: by default the DRAGEN-masked FASTA the CRAMs made before nf-align used. The sample sheet builder writes it into such a CRAM's row. Needs <aligned_ref_fasta>.fai alongside."
                 },
                 "somalier_sites": {
                     "type": "string",

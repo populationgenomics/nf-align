@@ -15,8 +15,8 @@ documentation.
    A downstream task can start before its input has been published, and locally a partly copied file
    was observed. Registration polls because of this
    ([ADR 0005](adr/0005-registration-as-a-polling-process.md)). A cross-bucket copy of a large WGS CRAM
-   could take longer than `register_wait_minutes`. If that happens, the SG is reported as failed at
-   `register` while its CRAM is in place, and the next run then trips the pre-flight check on it.
+   could take longer than `register_wait_minutes`. If that happens, the SG's registration fails while its
+   CRAM is in place. `-resume` registers it; a new run trips the pre-flight check on it.
 3. **A publish refused by IAM.** If the analysis dataset's service account can't write to an SG's
    dataset bucket, that SG's `publishDir` copy fails. Whether that aborts the whole run (`publishDir`'s
    `failOnError`) or only loses that SG hasn't been tested, and the docs were not checked. Either way,
@@ -27,22 +27,26 @@ documentation.
 5. **`error()` inside a channel operator is hidden.** ✅ The console shows only "Unexpected error
    [InvocationTargetException]". Use `fail()` in `main.nf` (log, then error) for any check that runs
    inside an operator.
-6. **`--param ''` on the command line arrives as boolean `true`, not empty.** ✅ The required-param
-   check would accept it.
-7. **A failed run exits 0.** ✅ Under `ignore`, see [ADR 0007](adr/0007-ignore-failed-sgs-and-report.md).
-   Launchers, Seqera Platform and any scripts watching the exit code will report success.
-8. **`failed.csv` is only written if the run reaches the end.** If the sample sheet step or the
-   pre-flight check fails, or the run is cancelled, there's no failed-SG report, and the run itself
-   fails anyway.
+6. **`--param ''` on the command line arrives as boolean `true`, not empty.** ✅ A param typed `String`
+   in `main.nf` gets the string `'true'`, which the required-param check accepts. `validateParams()` catches
+   it only for `dupblaster_extra_args`.
+7. **A failed run exits 0, and says nothing about it.** ✅ Under `ignore`, see
+   [ADR 0017](adr/0017-failed-sgs-are-dropped-not-reported.md). Launchers, Seqera Platform and any scripts
+   watching the exit code will report success, and there's no `failed.csv`. Look at the failed tasks in
+   Seqera, or compare `crams.csv` with the sample sheet.
+8. **Typed params need Nextflow 26.04.** ✅ (25.10.0, 26.04.4, 26.10.4, local) The `params {}` block in
+   `main.nf` uses `String?` for optional params, which 25.10 can't parse, so `nextflowVersion` is `>=26.04`.
+   Config values aren't type-checked, only command-line ones: `cohorts` declared `String?` still takes a list
+   from a config file.
 9. **The run-records path is keyed on `arGuid`.** `arGuid` is unique in production, but it's set by
    hand while testing. With `overwrite: false`, a second run with the same `arGuid` would silently keep
-   the first run's `samplesheet.tsv`, `crams.csv` and `failed.csv`. The run-records check stops that run
+   the first run's `samplesheet.tsv` and `crams.csv`. The run-records check stops that run
    before the sample sheet is built. It's skipped on `-resume`, so resuming with the same session but a
    different set of inputs isn't caught.
 10. **Shard count is part of the task hash.** Changing `realignment_shards` between `-resume` runs
     re-aligns every CRAM/BAM input from scratch.
-    - **So are each SG's destinations.** `meta` carries the SG's Metamist project, output root and
-      relative paths, and `meta` is part of every per-SG task hash. Changing `output_root`, `accessLevel`
+    - **So are each SG's destinations.** `meta` carries the SG's Metamist project and output folders, and
+      `meta` is part of every per-SG task hash, and of `PREFLIGHT`'s. Changing `output_root`, `accessLevel`
       or `sequencing_type` between `-resume` attempts re-runs alignment for every SG.
 
 ## Re-running after a partial failure
@@ -57,10 +61,12 @@ documentation.
       registered, so either mode trips the pre-flight check on them until they're registered or deleted by hand.
     - **Fingerprint failures:** likewise, the CRAM is published but not registered, so the next run trips the
       pre-flight check on it (ADR 0013).
-    - **`-resume`** works in both modes: outputs claimed by the session's earlier attempt are allowed to
-      exist, and `publishDir` skips them (ADR 0009). In cohorts and SG ID modes the cached sample sheet is reused, so SGs registered by the
-      earlier attempt are republished from cache and not registered again. The claims file lives in the
-      work dir, so cleaning the work dir (or resuming from a different one) brings the check back.
+    - **`-resume`** works in both modes, and is the way to recover: a passed pre-flight check is cached, so
+      the earlier attempt's outputs aren't clashes, and `publishDir` skips them (ADR 0016). Failed tasks,
+      including registrations, run again. In cohorts and SG ID modes the cached sample sheet is reused, so SGs
+      registered by the earlier attempt are republished from cache and not registered again. The cache lives
+      in the work dir, so cleaning the work dir (or resuming from a different one) brings the check back, and
+      it then fails on the earlier attempt's files.
 
 ## Tools
 
@@ -175,7 +181,7 @@ documentation.
     has nine. This is inferred from the `cram` registration, which uses two.
 39. **The DRAGEN-masked reference's `.dict` hasn't been checked.** A QC-only SG whose CRAM predates nf-align
     is QC'd against `aligned_ref_fasta`, with `Homo_sapiens_assembly38_masked.dict` assumed to sit beside it.
-    If it doesn't, every such SG fails at `qc` ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
+    If it doesn't, every such SG's QC fails ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
 40. **`--qc_aligned` over a large cohort is a large run.** cpg-flow's CRAMs have no `cram_qc` analysis, so
     each one gets three QC tasks, each staging the whole CRAM. Launch it on purpose, maybe with `--sgids`.
 41. **A QC-only SG's duplicate metrics are found by path, and not checked.** If the file at the nf-align or

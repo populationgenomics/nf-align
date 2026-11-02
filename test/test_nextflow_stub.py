@@ -66,13 +66,13 @@ def run(tmp_path, cohort_sgs):
     Run main.nf in stub mode over a sheet with one SG per input kind, across two datasets, with PROJECT as the
     analysis dataset; returns (result, output_root, trace rows).
     """
-    sheet = tmp_path / 'sheet.tsv'
-    write_sheet(build_rows(cohort_sgs, 'standard', 'genome'), str(sheet))
     refs = tmp_path / 'refs'
+    sheet = tmp_path / 'sheet.tsv'
+    write_sheet(build_rows(cohort_sgs, 'standard', 'genome', str(refs / 'masked.fasta')), str(sheet))
     for name in ['ref.fasta', 'ref.fasta.fai', *(f'ref.fasta.{ext}' for ext in ['bwt.2bit.64', 'amb', 'ann', 'pac'])]:
         touch(refs / name)
     touch(refs / 'ref.dict')
-    # the reference of an already-aligned CRAM whose analysis doesn't record one, with its .dict beside it
+    # the reference the sample sheet gives an already-aligned CRAM whose analysis doesn't record one, with its .dict
     for name in ['masked.fasta', 'masked.fasta.fai', 'masked.dict']:
         touch(refs / name)
     touch(refs / 'sites.vcf.gz')
@@ -165,7 +165,6 @@ def test_every_input_kind_is_aligned_published_and_registered(run):
     for r in index:
         assert r['cram'] == str(cram_dir(out, r['dataset']) / f'{r["sg_id"]}.cram')
         assert r['crai'] == f'{r["cram"]}.crai'
-    assert (run_dir(out) / 'failed.csv').read_text() == 'sg_id,dataset,failed_at\n'
     assert not (out / OTHER / 'alignment_samplesheets').exists()
     # a sheet passed with --samplesheet isn't republished
     assert not (run_dir(out) / 'samplesheet.tsv').exists()
@@ -218,7 +217,6 @@ def test_cram_qc_can_be_turned_off(run):
     assert task_names(tasks, 'REGISTER_CRAM') == NEW
     # the duplicate metrics come from alignment, so they're still published, alone in the QC folder
     assert [p.name for p in qc_dir(out, PROJECT, 'CPG1').iterdir()] == ['CPG1.markduplicates-metrics']
-    assert (run_dir(out) / 'failed.csv').read_text() == 'sg_id,dataset,failed_at\n'
 
 
 def qc_tool_files(sg_id: str, coverage: str = 'wgs') -> dict[str, str]:
@@ -258,7 +256,6 @@ def test_aligned_sgs_without_cram_qc_are_qcd_without_realigning(run, tmp_path):
 
     # the run records list only the CRAMs this run aligned
     assert {r['sg_id'] for r in read_tsv(run_dir(out) / 'crams.csv', sep=',')} == NEW
-    assert (run_dir(out) / 'failed.csv').read_text() == 'sg_id,dataset,failed_at\n'
 
 
 def test_a_run_with_nothing_to_align_only_qcs(run, tmp_path):
@@ -267,7 +264,7 @@ def test_a_run_with_nothing_to_align_only_qcs(run, tmp_path):
     result, out, tasks = run('--qc_aligned', 'true', '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
     processes = {t['name'].split(' ')[0].split(':')[-1] for t in tasks}
-    assert processes == {*QC_PROCESSES, 'REGISTER_CRAM_QC', 'WRITE_RUN_RECORDS'}
+    assert processes == {'PREFLIGHT', *QC_PROCESSES, 'REGISTER_CRAM_QC', 'WRITE_RUN_RECORDS'}
     assert task_names(tasks, 'REGISTER_CRAM_QC') == {QC_ONLY}
     assert (run_dir(out) / 'crams.csv').read_text() == 'sg_id,dataset,cram,crai\n'
 
@@ -295,7 +292,7 @@ def test_existing_qc_files_of_a_qc_only_sg_fail_the_run(run, tmp_path):
     assert not [t for t in tasks if t['status'] == 'COMPLETED']
 
 
-def test_failed_qc_of_a_qc_only_sg_is_reported(run, tmp_path):
+def test_failed_qc_of_a_qc_only_sg_is_not_registered(run, tmp_path):
     inject = tmp_path / 'fail.config'
     inject.write_text(
         'process {\n'
@@ -304,9 +301,8 @@ def test_failed_qc_of_a_qc_only_sg_is_reported(run, tmp_path):
     )
     result, out, tasks = run('-c', str(inject), '--qc_aligned', 'true', '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert QC_ONLY not in task_names(tasks, 'REGISTER_CRAM_QC')
-    failed = read_tsv(run_dir(out) / 'failed.csv', sep=',')
-    assert [(r['sg_id'], r['dataset'], r['failed_at']) for r in failed] == [(QC_ONLY, PROJECT, 'qc')]
+    assert task_names(tasks, 'REGISTER_CRAM_QC') == NEW
+    assert not (qc_dir(out, PROJECT, QC_ONLY) / f'{QC_ONLY}.picard-wgs-metrics').exists()
 
 
 def test_new_cram_is_fingerprinted_against_the_alignment_reference(run, tmp_path):
@@ -340,7 +336,7 @@ def test_exomes_are_published_under_exome(run):
         assert not (out / ds / 'cram_qc').exists()
 
 
-def test_failed_sgs_are_dropped_and_reported(run, tmp_path):
+def test_failed_sgs_are_dropped(run, tmp_path):
     # a stub never fails, so fail from config: one shard of CPG3, CPG2's fingerprint, CPG6's registration,
     # CPG1's samtools stats and CPG4's QC registration
     inject = tmp_path / 'fail.config'
@@ -355,7 +351,7 @@ def test_failed_sgs_are_dropped_and_reported(run, tmp_path):
     )
     result, out, tasks = run('-c', str(inject), '--register', 'true')
 
-    # ignored failures don't fail the run; each SG is listed once, at the first step it didn't get through
+    # ignored failures don't fail the run
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'CPG3' not in task_names(tasks, 'MERGE_TO_CRAM')  # never merged from the surviving shard
     assert not (cram_dir(out, PROJECT) / 'CPG3.cram').exists()
@@ -368,16 +364,28 @@ def test_failed_sgs_are_dropped_and_reported(run, tmp_path):
     assert 'CPG1' in task_names(tasks, 'REGISTER_CRAM')
     assert task_names(tasks, 'REGISTER_CRAM_QC') == NEW - {'CPG1', 'CPG2', 'CPG3', 'CPG6'}
     assert (qc_dir(out, PROJECT, 'CPG1') / 'CPG1.verify-bamid.selfSM').exists()
-    failed = read_tsv(run_dir(out) / 'failed.csv', sep=',')
-    assert [(r['sg_id'], r['dataset'], r['failed_at']) for r in failed] == [
-        ('CPG1', PROJECT, 'qc'),
-        ('CPG2', PROJECT, 'somalier'),
-        ('CPG3', PROJECT, 'align'),
-        ('CPG4', OTHER, 'register_qc'),
-        ('CPG6', OTHER, 'register'),
-    ]
     assert {r['sg_id'] for r in read_tsv(run_dir(out) / 'crams.csv', sep=',')} == NEW - {'CPG3'}
-    assert '5 SG(s) failed and were skipped' in result.stdout + result.stderr
+    assert not (run_dir(out) / 'failed.csv').exists()
+
+
+def test_resume_finishes_the_sgs_that_failed(run, tmp_path):
+    # CPG2's CRAM is published, but its fingerprint fails, so it isn't registered
+    inject = tmp_path / 'fail.config'
+    inject.write_text(
+        "process { withName: 'SOMALIER_EXTRACT' { beforeScript = { meta.id == 'CPG2' ? 'exit 1' : 'true' } } }\n",
+    )
+    result, out, tasks = run('-c', str(inject), '--register', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'CPG2' not in task_names(tasks, 'REGISTER_CRAM')
+    assert (cram_dir(out, PROJECT) / 'CPG2.cram').exists()
+
+    # the pre-flight check passed in the first attempt and is cached, so CPG2's published CRAM isn't a clash, and
+    # only its failed task and the ones after it run. crams.csv already listed CPG2, so it's cached too
+    result, _out, tasks = run('-resume', '--register', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'PREFLIGHT' in {t['name'] for t in tasks if t['status'] == 'CACHED'}
+    ran = {t['name'] for t in tasks if t['status'] == 'COMPLETED'}
+    assert ran == {'SOMALIER_EXTRACT (CPG2)', 'REGISTER_CRAM (CPG2)', 'REGISTER_CRAM_QC (CPG2)'}
 
 
 def test_existing_outputs_fail_the_run_before_any_alignment(run):
@@ -401,6 +409,17 @@ def test_existing_outputs_fail_the_run_before_any_alignment(run):
     assert not [t for t in tasks if t['status'] == 'COMPLETED']
 
 
+def test_resume_checks_again_after_a_failed_pre_flight_check(run, tmp_path):
+    # a failed check isn't cached, so a resumed run still stops on a file it didn't write
+    clash = Path(touch(cram_dir(tmp_path / 'results', PROJECT) / 'CPG1.cram'))
+    for args in [(), ('-resume',)]:
+        result, _out, tasks = run(*args)
+        assert result.returncode != 0
+        assert '1 output(s) already exist' in result.stdout + result.stderr
+        assert str(clash) in result.stdout + result.stderr
+        assert not [t for t in tasks if t['status'] == 'COMPLETED']
+
+
 def test_reusing_an_ar_guid_fails_before_any_task(run):
     result, out, _tasks = run()
     assert result.returncode == 0, result.stdout + result.stderr
@@ -413,15 +432,15 @@ def test_reusing_an_ar_guid_fails_before_any_task(run):
     assert not tasks
 
 
-def test_resume_republishes_outputs_this_session_claimed(run):
+def test_resume_skips_the_pre_flight_check_it_passed(run):
     result, _out, _tasks = run()
     assert result.returncode == 0, result.stdout + result.stderr
 
-    # the outputs and run records exist, but this session's earlier attempt claimed the outputs at the
-    # pre-flight check, and -resume skips the run-records check
+    # the outputs and run records exist, but the first attempt passed the pre-flight check, which is cached, and
+    # -resume skips the run-records check
     result, out, tasks = run('-resume')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert any(t['name'] == 'WRITE_RUN_RECORDS' for t in tasks)
+    assert {'PREFLIGHT', 'WRITE_RUN_RECORDS'} <= {t['name'] for t in tasks}
     assert {t['status'] for t in tasks} == {'CACHED'}
     for ds, sg_ids in NEW_BY_DATASET.items():
         assert {p.name for p in cram_dir(out, ds).glob('*.cram')} == {f'{s}.cram' for s in sg_ids}
@@ -449,8 +468,8 @@ def test_sgids_mode_publishes_the_built_sheet(run):
         (('--cohorts', 'COH1'), 'Provide exactly one of --cohorts, --sgids or --samplesheet'),
         (('--sgids', 'CPG1'), 'Provide exactly one of --cohorts, --sgids or --samplesheet'),
         (('--dupblaster_extra_args',), '--dupblaster_extra_args must be a string of dupblaster arguments'),
-        (('--cram_qc', 'maybe'), "--cram_qc must be true or false, got 'maybe'"),
-        (('--qc_aligned', 'maybe'), "--qc_aligned must be true or false, got 'maybe'"),
+        (('--cram_qc', 'maybe'), 'Parameter `cram_qc` with type Boolean cannot be assigned to maybe'),
+        (('--qc_aligned', 'maybe'), 'Parameter `qc_aligned` with type Boolean cannot be assigned to maybe'),
         (('--qc_aligned', 'true', '--cram_qc', 'false'), "--qc_aligned needs CRAM QC, so it can't be combined"),
     ],
 )
@@ -461,16 +480,18 @@ def test_invalid_params_fail_early(run, args, message):
     assert not tasks
 
 
-def test_cram_row_without_a_reference_fails_early(run, tmp_path):
+@pytest.mark.parametrize(('kind', 'sg_id'), [('cram', 'CPG3'), ('aligned', 'CPG5')])
+def test_cram_row_without_a_reference_fails_early(run, tmp_path, kind, sg_id):
+    # the sample sheet builder fills it in for an aligned CRAM whose analysis doesn't record one
     sheet = tmp_path / 'sheet.tsv'
     rows = read_tsv(sheet)
     for row in rows:
-        if row['kind'] == 'cram':
+        if row['sg_id'] == sg_id:
             row['reads_ref'] = ''
     write_sheet(rows, str(sheet))
     result, _out, tasks = run()
     assert result.returncode != 0
-    assert 'CPG3: a cram row needs reads_ref' in result.stdout + result.stderr
+    assert f'{sg_id}: {kind} rows need reads_ref' in result.stdout + result.stderr
     assert not [t for t in tasks if t['status'] == 'COMPLETED']
 
 
@@ -497,7 +518,7 @@ def test_per_sg_tasks_are_labelled_with_the_sgs_dataset(run, tmp_path):
     )
     result, _out, tasks = run('-c', str(inject), '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
-    labelled = [t for t in tasks if not t['name'].startswith('WRITE_RUN_RECORDS')]
+    labelled = [t for t in tasks if t['name'] not in {'PREFLIGHT', 'WRITE_RUN_RECORDS'}]
     # SORT_INDEX 1, ALIGN_SHARD 6, MERGE_TO_CRAM 3, ALIGN_TO_CRAM 2, then 5 each of SOMALIER_EXTRACT, the three
     # QC processes, REGISTER_CRAM and REGISTER_CRAM_QC
     assert len(labelled) == 42
@@ -513,8 +534,7 @@ def test_workflow_needs_every_container(run, tmp_path):
     unset.write_text('params.cpg_container = null\n')
     result, _out, tasks = run('-c', str(unset), '--align_container', 'image:1')
     assert result.returncode != 0
-    message = 'The workflow needs --align_container, --cpg_container and --somalier_container'
-    assert message in result.stdout + result.stderr
+    assert 'Parameter `cpg_container` is required' in result.stdout + result.stderr
     assert not tasks
 
 
@@ -524,7 +544,7 @@ def test_cram_qc_needs_its_containers_and_references(run, tmp_path):
     unset.write_text('params.picard_container = null\n')
     result, _out, tasks = run('-c', str(unset))
     assert result.returncode != 0
-    assert 'CRAM QC needs --verifybamid_container and --picard_container' in result.stdout + result.stderr
+    assert 'CRAM QC needs --picard_container (or --cram_qc false)' in result.stdout + result.stderr
     assert not tasks
 
     # the references have gs:// defaults, so unset one from config and leave it off the command line
@@ -546,5 +566,5 @@ def test_missing_required_params_fail_early(run, tmp_path):
     unset.write_text('params.ref_fasta = null\n')
     result, _out, tasks = run('-c', str(unset), reference=())
     assert result.returncode != 0
-    assert 'Missing required params: --ref_fasta' in result.stdout + result.stderr
+    assert 'Parameter `ref_fasta` is required' in result.stdout + result.stderr
     assert not tasks

@@ -3,7 +3,7 @@
 Aligns the short-read sequencing groups of a set of Metamist cohorts, or a list of sequencing groups,
 which can come from several datasets. The output for each is a deduplicated, coordinate-sorted CRAM with a
 somalier fingerprint and a set of CRAM QC metrics, published to and registered in the SG's own dataset. On
-request, SGs that are already aligned get CRAM QC alone. It's a Nextflow (≥ 25.10, strict syntax) pipeline
+request, SGs that are already aligned get CRAM QC alone. It's a Nextflow (≥ 26.04, strict syntax) pipeline
 that runs on Google Batch against data in GCS, and it can be tested offline with stub runs.
 
 The pipeline adapts the alignment half of the Nextflow port in `cpg-flow-align-genotype/nextflow/`.
@@ -26,7 +26,6 @@ replaced it is described here.
 | [0003](adr/0003-read-name-hash-shards-not-regions.md) | CRAM/BAM inputs are sharded by read-name hash, not genomic region | current |
 | [0004](adr/0004-mark-duplicates-once-per-sg-after-merge.md) | duplicates are marked once per SG, after the merge | current |
 | [0005](adr/0005-registration-as-a-polling-process.md) | registration is a per-SG process that polls for the published files | current |
-| [0007](adr/0007-ignore-failed-sgs-and-report.md) | a failed SG is dropped and reported, and the run exits 0 | current |
 | [0008](adr/0008-sgs-from-several-datasets-published-with-publishdir.md) | one run covers SGs from several datasets, each published and registered in its own, with `publishDir` | current (replaces 0001) |
 | [0009](adr/0009-never-overwrite-preflight-and-publishdir-no-overwrite.md) | never overwrite: a pre-flight check, and `publishDir overwrite: false` | current (replaces 0002) |
 | [0010](adr/0010-gatk-unmasked-reference-alt-aware.md) | align alt-aware to the unmasked GATK hg38 FASTA | current (replaces 0006) |
@@ -34,7 +33,9 @@ replaced it is described here.
 | [0013](adr/0013-only-register-files-this-run-wrote.md) | a run only registers files it wrote; an unregistered CRAM is a clash | current (replaces 0011) |
 | [0014](adr/0014-cram-qc-one-folder-one-analysis.md) | CRAM QC: one folder and one `cram_qc` analysis per CRAM, registered apart from the CRAM | current, extended by 0015 |
 | [0015](adr/0015-qc-already-aligned-crams-on-request.md) | `--qc_aligned` gives CRAM QC to already-aligned SGs that lack it | current |
-| [0001](adr/0001-one-dataset-one-sequencing-type-per-run.md), [0002](adr/0002-preflight-check-instead-of-overwrite-false.md), [0006](adr/0006-dragen-masked-reference-alt-unaware.md), [0011](adr/0011-register-and-fingerprint-unregistered-crams.md) | | superseded |
+| [0016](adr/0016-preflight-check-is-a-cached-task.md) | the pre-flight check is a cached task, so `-resume` skips a check that passed | current |
+| [0017](adr/0017-failed-sgs-are-dropped-not-reported.md) | a failed SG is dropped, not reported; the run exits 0, and `-resume` picks it up | current (replaces 0007) |
+| [0001](adr/0001-one-dataset-one-sequencing-type-per-run.md), [0002](adr/0002-preflight-check-instead-of-overwrite-false.md), [0006](adr/0006-dragen-masked-reference-alt-unaware.md), [0007](adr/0007-ignore-failed-sgs-and-report.md), [0011](adr/0011-register-and-fingerprint-unregistered-crams.md) | | superseded |
 
 ADR 0006's DRAGEN-masked FASTA is still the reference assumed for CRAMs made before nf-align
 (`aligned_ref_fasta`).
@@ -58,8 +59,13 @@ doesn't matter: a cohort in `alpha` that holds an SG from `beta` sends that SG's
 | `cohorts` **or** `sgids` **or** `samplesheet` | exactly one: Metamist cohort IDs, Metamist SG IDs (queried directly), or a prepared sheet that skips the Metamist step |
 | `output_root` | null by default, so each dataset's outputs go to its bucket. If set (the `test` profile sets `results`), they go to `<output_root>/<ds>/` instead, with the same layout below that |
 | `ref_fasta` | the alignment reference. Its `.fai`, bwa-mem3 index and `.alt` (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac,alt}`) must sit beside it, and `ref_fasta_dict` is its alt-annotated `.dict`. Aligned alt-aware ([ADR 0010](adr/0010-gatk-unmasked-reference-alt-aware.md)) |
-| `aligned_ref_fasta` | the reference assumed for an already-aligned CRAM whose analysis doesn't record one: the DRAGEN-masked FASTA the CRAMs made before nf-align used. Its `.fai` must sit beside it, and, for QC-only SGs, its `<name>.dict` |
+| `aligned_ref_fasta` | the reference of an already-aligned CRAM whose analysis doesn't record one: the DRAGEN-masked FASTA the CRAMs made before nf-align used. `BUILD_SAMPLESHEET` writes it into such a CRAM's row. Its `.fai` must sit beside it, and, for QC-only SGs, its `<name>.dict` |
 | `align_container`, `cpg_container`, `somalier_container` | the images, with defaults in `nextflow.config`. The run fails at launch if any is unset, in every profile |
+
+The defaults are in `nextflow.config`, which `conf/base.config` reads. `main.nf`'s `params {}` block declares
+each one's type, so Nextflow converts command-line values (`--cram_qc false` is a Boolean, not the string
+`'false'`) and fails the run at launch if a param that isn't optional has no value or the wrong type.
+`validateParams()` checks only what the types can't: allowed values, and params needed together.
 
 Switches and tuning, all with defaults in `nextflow.config`:
 
@@ -88,18 +94,18 @@ analysis's meta. Analysing new and old CRAMs together in one joint analysis need
 ```
 run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (or --samplesheet)
                                                              ▼
-sample sheet ─ parse rows, per-SG destinations into meta ─┬─ aligned ───────────────────────────────────────────────▶ all_crams (for genotyping)
-                                                          ├─ QC-only (--qc_aligned) ─┐                                  (QC-only SGs too)
-                                                          └─ to align ───────────────┴─ pre-flight
-                                                                                          │
-   to align: ALIGN ─ publishDir: CRAM, .crai, duplicate metrics → SG's dataset bucket ──▶ all_crams
+sample sheet ─ parse rows, per-SG destinations into meta ─ PREFLIGHT (every row) ─┬─ aligned: nothing more
+                                                                                  ├─ QC-only (--qc_aligned)
+                                                                                  └─ to align
+
+   to align: ALIGN ─ publishDir: CRAM, .crai, duplicate metrics → SG's dataset bucket
                ├─ SOMALIER_EXTRACT ─ publishDir: .somalier
                │       └─ REGISTER_CRAM (one cram analysis: CRAM + .crai + .somalier) ─┐
                └─ CRAM_QC ─ publishDir: QC metrics ────────────────────────────────────┴─ REGISTER_CRAM_QC (one cram_qc analysis)
 
    QC-only:  CRAM_QC (the registered CRAM, its own reference) ─ publishDir: QC metrics ─ REGISTER_CRAM_QC
 
-then WRITE_RUN_RECORDS (crams.csv, failed.csv → analysis dataset bucket)
+then WRITE_RUN_RECORDS (crams.csv → analysis dataset bucket)
 ```
 
 ### 1. Sample sheet (`BUILD_SAMPLESHEET`, `bin/build_samplesheet.py`)
@@ -131,8 +137,10 @@ then WRITE_RUN_RECORDS (crams.csv, failed.csv → analysis dataset bucket)
 Columns: `sg_id, dataset, kind, n_units, unit, r1, r2, reads, reads_index, reads_ref, somalier, cram_qc`. For a CRAM,
 `reads_ref` is the reference it was written against, and is required: a CRAM is never decoded with `ref_fasta`.
 For ORA, it's the ORA reference tarball. For an `aligned` row, it's the `ref_fasta` its analysis's meta records
-(nf-align records it); if empty, `aligned_ref_fasta` (default: the DRAGEN-masked FASTA the CRAMs made before
-nf-align used, ADR 0006) is assumed. `main.nf` doesn't read the `somalier` column.
+(nf-align records it), or else `aligned_ref_fasta` (default: the DRAGEN-masked FASTA the CRAMs made before
+nf-align used, ADR 0006), which `main.nf` passes to the script. So `main.nf` never has to guess: an `aligned`
+row without `reads_ref`, which can only come from a `--samplesheet` input, fails the run like a `cram` row
+without one. `main.nf` doesn't read the `somalier` column.
 
 ### 2. Pre-flight
 
@@ -141,27 +149,31 @@ The pipeline never overwrites a file ([ADR 0009](adr/0009-never-overwrite-prefli
 up front:
 
 - **Run records**: before the sample sheet is built, the run fails if
-  `alignment_samplesheets/<arGuid>/` in the analysis dataset bucket already holds a `samplesheet.tsv`,
-  `crams.csv` or `failed.csv`. This guards against an `arGuid` reused by hand while testing. It's skipped
+  `alignment_samplesheets/<arGuid>/` in the analysis dataset bucket already holds a `samplesheet.tsv` or
+  `crams.csv`. This guards against an `arGuid` reused by hand while testing. It's skipped
   on `-resume`.
-- **Outputs**: before anything is aligned, every CRAM, `.crai`, `.somalier` and QC metrics URI that the run
-  would publish is checked in its SG's dataset bucket. If any exist, the run fails and lists them all. `aligned` rows
+- **Outputs** (`PREFLIGHT`): before anything is aligned, every CRAM, `.crai`, `.somalier` and QC metrics URI
+  that the run would publish is checked in its SG's dataset bucket. If any exist, the run fails and lists them all. `aligned` rows
   are not checked: they publish nothing, and an existing CRAM is the expected state. An unregistered CRAM is a
   clash like any other, because the run only registers files it wrote
   ([ADR 0013](adr/0013-only-register-files-this-run-wrote.md)). A QC-only SG's QC tools' files are checked
   the same way, so QC files left by an earlier, failed attempt stop the run until they're deleted.
 
-A run that passes the check records the outputs it claims in `<workDir>/nf-align-claims/<sessionId>.txt`.
-`-resume` keeps the session ID, so a resumed run lets those outputs exist and republishes them from the
-cached tasks (or, where they're already there, skips them). Anything else that already exists still
-fails the run.
+`PREFLIGHT` is a native (`exec:`) process, not a function, so that Nextflow caches it
+([ADR 0016](adr/0016-preflight-check-is-a-cached-task.md)). Its input is every sample sheet row and every URI
+the run would publish, and it holds every row back until the check has passed. A resumed run whose first
+attempt passed the check takes it from the cache, so the files that attempt published aren't clashes, and
+`publishDir` skips them when it republishes the cached tasks. A check that failed isn't cached, so a resumed
+run checks again. If the rows or destinations change between attempts, the check runs again and finds the
+earlier attempt's files: launch a fresh run.
 
 Two runs launched close together for the same SG can both pass the check. The second run's publish is
 then skipped silently, and it registers the first run's CRAM under its own `ar-guid`. That gap is accepted
 (ADR 0009).
 
 Before this, at launch, `main.nf` validates params and fails on anything missing or malformed (see Scope
-of a run). A sheet row with an unknown `kind`, a `cram` row without `reads_ref`, a row without `dataset`, or
+of a run). A sheet row with an unknown `kind`, a `cram` or `aligned` row without `reads_ref`, a row without
+`dataset`, or
 a QC-only SG whose reference isn't a `.fasta`, `.fa` or `.fna` (so Picard can't find its `.dict`) also fails
 the run.
 
@@ -194,8 +206,9 @@ the run.
   side by side, so the FASTA's own name is the index prefix and the `@SQ` lines keep their `AH` tags
   ([ADR 0010](adr/0010-gatk-unmasked-reference-alt-aware.md)). Swapping the `.alt` or `.dict`, or dropping
   `alt` from `ref_suffixes` in `main.nf`, changes how reads are placed and needs a new ADR.
-- **Emits:** `cram` (newly aligned only), `markdup`, and `all_crams` (new CRAMs plus every already-aligned
-  SG, QC-only or not, with no tasks of their own), which is ready for genotyping.
+- **Takes** only the rows to align, and **emits** `cram`: `[meta, cram, crai]` for each newly aligned SG.
+  Genotyping will need every SG's CRAM: mix `ALIGN.out.cram` with the already-aligned rows in `main.nf`, whose
+  `meta.cram` is the registered CRAM.
 
 ### 4. Outputs
 
@@ -207,12 +220,16 @@ When `main.nf` parses a sample sheet row, it works out the SG's destinations and
 next to the rest of its inputs:
 
 - `dataset`, and its Metamist project (`<ds>` or `<ds>-test`)
-- its output root: `gs://cpg-<ds>-{main|test}`, or `<output_root>/<ds>`
-- the relative paths of its CRAM, `.crai`, somalier fingerprint and QC metrics
+- `cramDir` and `qcDir`: the two folders it publishes to, under `gs://cpg-<ds>-{main|test}` or
+  `<output_root>/<ds>`
+- `cram`: where its new CRAM is published, or an already-aligned SG's registered CRAM
+- `ref`: the reference that CRAM is (or will be) written against. The input reads' own reference stays in the
+  sample sheet row, which only `ALIGN` reads
 
-The `publishDir` settings in config only apply these values, and the pre-flight check and registration
-read the same `meta`, so publishing and registration can't drift apart. `main.nf` stays the one place the
-layout is defined:
+The `publishDir` settings in config only apply these values: the CRAM and its companions go to `cramDir`, and
+every QC file to `qcDir`. `outputs(meta)` in `main.nf` lists every file the SG publishes, by its key in the
+analysis that registers it, and the pre-flight check and both registrations read that, so publishing and
+registration can't drift apart. `main.nf` stays the one place the layout is defined:
 
 | target | path under the SG's output root (`exome/` prefix for exomes) |
 |---|---|
@@ -228,13 +245,14 @@ Run records go under the analysis dataset's output root, at
 |---|---|
 | `samplesheet.tsv` | `BUILD_SAMPLESHEET` |
 | `crams.csv` (`sg_id, dataset, cram, crai`, the published URIs) | `WRITE_RUN_RECORDS`, a native (`exec:`) process that gets the collected records, sorted by SG |
-| `failed.csv` (`sg_id, dataset, failed_at`) | `WRITE_RUN_RECORDS` |
+
+There is no record of failed SGs ([ADR 0017](adr/0017-failed-sgs-are-dropped-not-reported.md)).
 
 Only newly aligned SGs are published, apart from a QC-only SG's QC tools' files
 ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
 
 Each per-SG task's `dataset` resource label is `meta.dataset`, so its cost goes to the SG's dataset.
-`BUILD_SAMPLESHEET` and `WRITE_RUN_RECORDS` are labelled with the analysis dataset.
+`BUILD_SAMPLESHEET`, `PREFLIGHT` and `WRITE_RUN_RECORDS` are labelled with the analysis dataset.
 
 ### 5. Fingerprint (`SOMALIER_EXTRACT`)
 
@@ -272,7 +290,7 @@ new folder.
 Already-aligned SGs aren't QC'd unless `--qc_aligned true` is set
 ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)). Then each one whose sample sheet row has an
 empty `cram_qc` is a **QC-only SG**: its registered CRAM goes through `CRAM_QC` against the reference it was
-written with (`reads_ref`, or `aligned_ref_fasta`, with the `<name>.dict` beside the FASTA), and nothing else
+written with (its row's `reads_ref`, with the `<name>.dict` beside the FASTA), and nothing else
 runs for it. Only the three tools' files are published, and the pre-flight check covers them. A run whose SGs
 are all aligned does only QC.
 
@@ -295,8 +313,8 @@ python3 -m cpg_utils.metamist_registration --project <SG's dataset>[-test] --out
 
 The fingerprint is found at `outputs.secondary_files.somalier.path` on the CRAM analysis.
 
-`REGISTER_CRAM_QC` runs once an SG's CRAM QC is complete *and* its `cram` analysis is registered, so a
-`cram_qc` analysis never points at an unregistered CRAM. The CRAM is its primary file again, and every QC
+`REGISTER_CRAM_QC` runs once an SG's CRAM QC is complete *and* its `cram` analysis is registered (by
+`REGISTER_CRAM`, or already, for a QC-only SG), so a `cram_qc` analysis never points at an unregistered CRAM. The CRAM is its primary file again, and every QC
 file, including the duplicate metrics, is a secondary file:
 
 ```
@@ -325,19 +343,20 @@ analyses for one CRAM.
 
 - **Per-SG tasks:** an exit code of 137 or 140 (OOM) is retried twice, with memory scaled by the attempt
   number. Any other failure is **ignored**: that SG is dropped and the rest carry on
-  ([ADR 0007](adr/0007-ignore-failed-sgs-and-report.md)).
+  ([ADR 0017](adr/0017-failed-sgs-are-dropped-not-reported.md)).
 - **Registration** is retried once and then ignored.
 - **Spot preemption** is retried by `google.batch.maxSpotAttempts = 3`.
-- **`BUILD_SAMPLESHEET`**, **`WRITE_RUN_RECORDS`**, the run-records check and the pre-flight check fail the
+- **`BUILD_SAMPLESHEET`**, **`PREFLIGHT`**, **`WRITE_RUN_RECORDS`** and the run-records check fail the
   whole run.
-- **Reporting:** dropped SGs are written to `alignment_samplesheets/<arGuid>/failed.csv` with the step
-  they failed at, and logged as a warning. Each SG has one row, at the first step it didn't get through:
-  `align`, `somalier`, `register`, `qc`, then `register_qc` (steps that are switched off are left out). An SG
-  that failed at `somalier` or `register` has a published CRAM but no analysis, and the next run's pre-flight
-  check stops on it until it's registered or deleted by hand. An SG that failed at `qc` or `register_qc` has a
-  registered CRAM, so later runs take it as already aligned. Only a `--qc_aligned` run retries its QC, once
-  its leftover QC files are deleted. A QC-only SG can only fail at `qc` or `register_qc`. **The run still
-  exits 0.** Anything automated has to read `failed.csv` (or the warning), not the exit status.
+- **No report:** dropped SGs aren't recorded or listed. **The run still exits 0.** Seqera Platform shows the
+  failed tasks, and `crams.csv` lists only the SGs that were aligned and published.
+- **Recovery is `-resume`:** it re-runs only the failed tasks and those after them, and the pre-flight check
+  is cached, so the files the first attempt published don't stop it
+  ([ADR 0016](adr/0016-preflight-check-is-a-cached-task.md)). A new run (a new session) is different. An SG
+  that failed at fingerprinting or registration has a published CRAM but no analysis, and a new run's
+  pre-flight check stops on it until it's registered or deleted by hand. An SG whose QC or QC registration
+  failed has a registered CRAM, so a new run takes it as already aligned, and only a `--qc_aligned` run
+  retries its QC, once its leftover QC files are deleted.
 
 ## Accepted gaps
 
@@ -346,8 +365,10 @@ These follow from the decisions above, and are accepted for now:
 - **Concurrent runs:** two runs launched close together for the same SG can both pass the pre-flight
   check, and the second registers the first run's CRAM (ADR 0009, ADR 0013).
 - **One stray file holds up the run:** an unregistered CRAM, or QC files from a failed attempt, stop every
-  SG in the run at the pre-flight check until someone registers or deletes them by hand (ADR 0013,
-  ADR 0015).
+  SG in a new run at the pre-flight check until someone registers or deletes them by hand (ADR 0013,
+  ADR 0015). Resuming the run that left them doesn't stop (ADR 0016).
+- **No failure report:** a run with dropped SGs exits 0 and records nothing about them. Seqera shows the
+  failed tasks (ADR 0017).
 - **No fingerprint gapfill:** CRAMs registered before nf-align fingerprinted stay without one. Adding one
   needs a process that can update or replace their analyses (ADR 0012).
 - **QC gapfill is opt-in:** an SG whose QC failed stays without CRAM QC until a `--qc_aligned` run, after
@@ -356,7 +377,7 @@ These follow from the decisions above, and are accepted for now:
 - **A QC-only analysis can include a file the run didn't write:** the duplicate metrics, found by path.
   This bends ADR 0013, for a file that's evidence about the CRAM rather than the CRAM itself (ADR 0015).
 - **QC of a pre-nf-align CRAM** needs a `.dict` beside the DRAGEN-masked FASTA. Without one, Picard fails
-  and the SG is reported at `qc` (ADR 0015).
+  and the SG's QC is dropped (ADR 0015).
 - **The `cram_qc` analysis type** has to exist in Metamist before a registering run (ADR 0014).
 - **Alt awareness isn't covered by the stub tests:** their placeholder reference has no `.alt` or `.dict`.
   Only real CRAMs show whether it took effect (ADR 0010, RISKS #22).
@@ -373,7 +394,7 @@ These follow from the decisions above, and are accepted for now:
 | `SAMTOOLS_STATS` | 4 | 4 GB × attempt | 100 / 20 GB | `e2-standard-4`, `e2-standard-4`, `e2-standard-8` |
 | `PICARD_METRICS` (two JVMs, 40% heap each) | 4 | 12 GB × attempt | 100 / 20 GB | `n2-standard-4`, `n2-highmem-4`, `n2-highmem-8` |
 | `BUILD_SAMPLESHEET`, `REGISTER_CRAM`, `REGISTER_CRAM_QC` | 1 | 4 / 2 GB | default | `e2-standard-2` |
-| `WRITE_RUN_RECORDS` | native `exec:`, in the Nextflow process | | | |
+| `PREFLIGHT`, `WRITE_RUN_RECORDS` | native `exec:`, in the Nextflow process | | | |
 
 **Every process names one exact `machineType`**, chosen by `task.attempt`, so an OOM retry lands on a
 bigger VM. Don't replace these with a list of types or a wildcard (`n2-*`). With
@@ -386,13 +407,13 @@ fit. The align processes use N2 because bwa-mem3 needs AVX2.
 ## Files
 
 ```
-main.nf                       params validation, run-records check, sample sheet, per-SG destinations, pre-flight, ALIGN, somalier, CRAM QC, registration, run records
-nextflow.config               params, profiles (standard: Google Batch, docker, test)
+main.nf                       param types and validation, run-records check, sample sheet, per-SG destinations and outputs, pre-flight, ALIGN, somalier, CRAM QC, registration, run records
+nextflow.config               param defaults, profiles (standard: Google Batch, docker, test)
 nextflow_schema.json          launch-form schema (main.nf does its own validation)
 conf/base.config              containers, resources, error strategy, per-SG resource labels, publishDir
 subworkflows/local/align/     ALIGN
 subworkflows/local/cram_qc/   CRAM_QC
-modules/local/<process>/      build_samplesheet, sort_index, align_to_cram, align_shard, merge_to_cram, somalier_extract, verifybamid, samtools_stats, picard_metrics, register_analysis, write_run_records
+modules/local/<process>/      build_samplesheet, preflight, sort_index, align_to_cram, align_shard, merge_to_cram, somalier_extract, verifybamid, samtools_stats, picard_metrics, register_analysis, write_run_records
 bin/build_samplesheet.py      cohorts or SG IDs, from any datasets -> sample sheet (needs only `metamist`)
 bin/align_stream.sh           per-kind input -> bwa-mem3 BAM stream
 bin/dedup_to_cram.sh          dupblaster -> sort -> CRAM 3.0 + metrics
@@ -431,10 +452,11 @@ verbatim to the dupblaster command, so quote it as you would for bash:
 
 **Done**, and stub-tested: everything described above. That is the multi-dataset design (ADR 0008,
 ADR 0009, first implemented from [PLAN.md](PLAN.md)), fingerprinting with one `cram` analysis per CRAM
-(ADR 0012, ADR 0013), CRAM QC (ADR 0014) and `--qc_aligned` (ADR 0015). `nextflow lint` is clean, and the
-58 tests pass. The stub runs span two datasets and cover every input kind, the exome layout,
+(ADR 0012, ADR 0013), CRAM QC (ADR 0014), `--qc_aligned` (ADR 0015), the cached pre-flight check
+(ADR 0016) and dropping the failure report (ADR 0017). `nextflow lint` is clean, and the 61 tests pass. The stub runs span two datasets and cover every input kind, the exome layout,
 registration paths and projects (including `accessLevel test`), injected failures, the run-records and
-pre-flight clashes, `-resume`, cohorts and SG ID modes, a sheet row without a dataset, per-SG resource labels,
+pre-flight clashes, `-resume` (after success, after dropped SGs, and after a failed pre-flight check),
+cohorts and SG ID modes, a sheet row without a dataset, per-SG resource labels,
 QC-only SGs and parameter validation.
 
 **Done**, a real test on real data - alignmets are quick and cheap (compared with DRAGMAP). Still requires use

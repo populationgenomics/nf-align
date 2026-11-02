@@ -9,7 +9,7 @@ it fails and lists them all.
 
 Before the sample sheet is built, there's also a cheap check of the run-records directory
 (`alignment_samplesheets/<arGuid>/` in the analysis dataset bucket). It fails the run if that directory
-already holds a sample sheet, `crams.csv` or `failed.csv`. `arGuid` is unique in production, but it's set
+already holds a sample sheet or `crams.csv`. `arGuid` is unique in production, but it's set
 by hand while testing.
 
 This supersedes [ADR 0002](0002-preflight-check-instead-of-overwrite-false.md), which left overwrite on so
@@ -17,10 +17,10 @@ that a clash in the middle of a run would fail loudly.
 
 ## Consequences
 
-- **`-resume`:** a run that passes the output check records the paths it claims in
-  `<workDir>/nf-align-claims/<sessionId>.txt`. On `-resume`, those paths are allowed to exist, and
-  `publishDir` skips them when it republishes cached tasks. The run-records check is skipped when
-  `workflow.resume` is set.
+- **`-resume`:** the output check is a cached task, so a resumed run doesn't repeat a check that passed, and
+  `publishDir` skips the files it republishes from cached tasks
+  ([ADR 0016](0016-preflight-check-is-a-cached-task.md), which replaced a claims file kept in the work dir).
+  The run-records check is skipped when `workflow.resume` is set.
 - **Unregistered CRAM:** a CRAM that was published but never registered (for example, because
   registration failed) stops the next run for that SG at the pre-flight check, until someone registers or
   deletes the file. A run never registers a file it didn't write
