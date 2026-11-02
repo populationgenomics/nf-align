@@ -2,6 +2,9 @@
  * Picard metrics of a CRAM, as cpg-flow's CramQcPicardMultiMetrics and CramQcPicardCollectMetrics, in one task
  * so the CRAM is staged once: CollectMultipleMetrics runs alongside CollectWgsMetrics (genome) or
  * CollectHsMetrics (exome), each JVM with 40% of the task's memory.
+ *
+ * htsjdk's CRAM decoding is single-threaded, and was most of the task's time, so samtools decodes the CRAM
+ * instead, multi-threaded, and streams each JVM uncompressed BAM on stdin.
  */
 process PICARD_METRICS {
     tag "${meta.id}"
@@ -25,13 +28,18 @@ process PICARD_METRICS {
 
     script:
     def heap = "-Xmx${(task.memory.toMega() * 0.4) as int}m"
+    // decode threads per stream, on top of samtools' own
+    def threads = Math.max(1, task.cpus.intdiv(2) - 1)
+    // a stream has no index, so picard can't do the indexed lookup of the coverage regions it would on the CRAM:
+    // samtools does it instead (-M -L: each read overlapping the regions, once). HsMetrics needs every read
+    def regions = sequencing_type == 'genome' ? '-M -L intervals.bed' : ''
     // the interval lists' headers carry the md5s of the reference they were made against (the DRAGEN-masked
     // one, for the genome coverage regions), and picard fails on a mismatch. A round trip through BED drops the
     // header, and re-adds it from this CRAM's .dict: the same regions, against the right reference
     def coverage = sequencing_type == 'genome'
         ? """
-        picard ${heap} CollectWgsMetrics \\
-            -I ${cram} \\
+        decode ${regions} | picard ${heap} CollectWgsMetrics \\
+            -I /dev/stdin \\
             -R ${fasta} \\
             -O ${meta.id}.picard-wgs-metrics \\
             --VALIDATION_STRINGENCY SILENT \\
@@ -40,8 +48,8 @@ process PICARD_METRICS {
             --READ_LENGTH 250
         """
         : """
-        picard ${heap} CollectHsMetrics \\
-            -I ${cram} \\
+        decode | picard ${heap} CollectHsMetrics \\
+            -I /dev/stdin \\
             -R ${fasta} \\
             -O ${meta.id}.picard-hs-metrics \\
             --VALIDATION_STRINGENCY SILENT \\
@@ -52,8 +60,17 @@ process PICARD_METRICS {
             -LEVEL LIBRARY
         """
     """
-    picard ${heap} CollectMultipleMetrics \\
-        -I ${cram} \\
+    # the CRAM, as uncompressed BAM. A reader may close the stream before its end (CollectWgsMetrics stops after
+    # its last interval), and samtools' SIGPIPE (141) then isn't a failure: each pipeline's status is picard's
+    decode() {
+        samtools view -@${threads} -u -T ${fasta} "\$@" ${cram} || [ \$? -eq 141 ]
+    }
+
+    picard IntervalListToBed -I ${intervals} -O intervals.bed
+    picard BedToIntervalList -I intervals.bed -O intervals.interval_list -SD ${dict}
+
+    decode | picard ${heap} CollectMultipleMetrics \\
+        -I /dev/stdin \\
         -R ${fasta} \\
         -O ${meta.id} \\
         -AS True \\
@@ -68,8 +85,6 @@ process PICARD_METRICS {
         -LEVEL SAMPLE &
     multiple=\$!
 
-    picard IntervalListToBed -I ${intervals} -O intervals.bed
-    picard BedToIntervalList -I intervals.bed -O intervals.interval_list -SD ${dict}
     ${coverage}
 
     # under set -e, a failed CollectMultipleMetrics fails the task here
