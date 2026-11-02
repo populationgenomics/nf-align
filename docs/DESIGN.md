@@ -1,19 +1,43 @@
 # nf-align: design brief
 
 Aligns the short-read sequencing groups of a set of Metamist cohorts, or a list of sequencing groups,
-which can come from several datasets. The output for each is a deduplicated, coordinate-sorted CRAM,
-published to and registered in the SG's own dataset. It's a Nextflow (≥ 25.10, strict syntax) pipeline that runs on Google
-Batch against data in GCS, and it can be tested offline with stub runs.
+which can come from several datasets. The output for each is a deduplicated, coordinate-sorted CRAM with a
+somalier fingerprint and a set of CRAM QC metrics, published to and registered in the SG's own dataset. On
+request, SGs that are already aligned get CRAM QC alone. It's a Nextflow (≥ 25.10, strict syntax) pipeline
+that runs on Google Batch against data in GCS, and it can be tested offline with stub runs.
 
 The pipeline adapts the alignment half of the Nextflow port in `cpg-flow-align-genotype/nextflow/`.
 It aligns with **bwa-mem3** (that port used DRAGMAP), and adds an in-pipeline sample sheet step,
-Metamist registration and a pre-flight output check. Genotyping is left out for now, but it is the next
-addition, and the shapes below are chosen so it can be wired in from `main.nf` alone.
+fingerprinting, CRAM QC, Metamist registration and a pre-flight output check. Genotyping is left out for
+now, but it is the next addition, and the shapes below are chosen so it can be wired in from `main.nf` alone.
 
 Terms are defined in [GLOSSARY.md](GLOSSARY.md). Why things are the way they are is recorded in
 [adr/](adr/). [RISKS.md](RISKS.md) lists what may bite later, and
 [AMBIGUOUS-CHOICES.md](AMBIGUOUS-CHOICES.md) lists the calls that could reasonably have gone the other way.
 The full design conversation is in [design-session-transcript.md](design-session-transcript.md).
+
+This document describes the design as it stands. Where an ADR has been superseded, only the decision that
+replaced it is described here.
+
+## Decisions
+
+| ADR | decision | status |
+|---|---|---|
+| [0003](adr/0003-read-name-hash-shards-not-regions.md) | CRAM/BAM inputs are sharded by read-name hash, not genomic region | current |
+| [0004](adr/0004-mark-duplicates-once-per-sg-after-merge.md) | duplicates are marked once per SG, after the merge | current |
+| [0005](adr/0005-registration-as-a-polling-process.md) | registration is a per-SG process that polls for the published files | current |
+| [0007](adr/0007-ignore-failed-sgs-and-report.md) | a failed SG is dropped and reported, and the run exits 0 | current |
+| [0008](adr/0008-sgs-from-several-datasets-published-with-publishdir.md) | one run covers SGs from several datasets, each published and registered in its own, with `publishDir` | current (replaces 0001) |
+| [0009](adr/0009-never-overwrite-preflight-and-publishdir-no-overwrite.md) | never overwrite: a pre-flight check, and `publishDir overwrite: false` | current (replaces 0002) |
+| [0010](adr/0010-gatk-unmasked-reference-alt-aware.md) | align alt-aware to the unmasked GATK hg38 FASTA | current (replaces 0006) |
+| [0012](adr/0012-one-analysis-per-cram.md) | one `cram` analysis per CRAM, with the fingerprint as a secondary file; no fingerprint gapfill | current |
+| [0013](adr/0013-only-register-files-this-run-wrote.md) | a run only registers files it wrote; an unregistered CRAM is a clash | current (replaces 0011) |
+| [0014](adr/0014-cram-qc-one-folder-one-analysis.md) | CRAM QC: one folder and one `cram_qc` analysis per CRAM, registered apart from the CRAM | current, extended by 0015 |
+| [0015](adr/0015-qc-already-aligned-crams-on-request.md) | `--qc_aligned` gives CRAM QC to already-aligned SGs that lack it | current |
+| [0001](adr/0001-one-dataset-one-sequencing-type-per-run.md), [0002](adr/0002-preflight-check-instead-of-overwrite-false.md), [0006](adr/0006-dragen-masked-reference-alt-unaware.md), [0011](adr/0011-register-and-fingerprint-unregistered-crams.md) | | superseded |
+
+ADR 0006's DRAGEN-masked FASTA is still the reference assumed for CRAMs made before nf-align
+(`aligned_ref_fasta`).
 
 ## Scope of a run
 
@@ -34,31 +58,56 @@ doesn't matter: a cohort in `alpha` that holds an SG from `beta` sends that SG's
 | `cohorts` **or** `sgids` **or** `samplesheet` | exactly one: Metamist cohort IDs, Metamist SG IDs (queried directly), or a prepared sheet that skips the Metamist step |
 | `output_root` | null by default, so each dataset's outputs go to its bucket. If set (the `test` profile sets `results`), they go to `<output_root>/<ds>/` instead, with the same layout below that |
 | `ref_fasta` | the alignment reference. Its `.fai`, bwa-mem3 index and `.alt` (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac,alt}`) must sit beside it, and `ref_fasta_dict` is its alt-annotated `.dict`. Aligned alt-aware ([ADR 0010](adr/0010-gatk-unmasked-reference-alt-aware.md)) |
-| `align_container`, `cpg_container` | the images, with defaults in `nextflow.config`. The run fails at launch if either is unset, in every profile |
+| `aligned_ref_fasta` | the reference assumed for an already-aligned CRAM whose analysis doesn't record one: the DRAGEN-masked FASTA the CRAMs made before nf-align used. Its `.fai` must sit beside it, and, for QC-only SGs, its `<name>.dict` |
+| `align_container`, `cpg_container`, `somalier_container` | the images, with defaults in `nextflow.config`. The run fails at launch if any is unset, in every profile |
+
+Switches and tuning, all with defaults in `nextflow.config`:
+
+| param | default | meaning |
+|---|---|---|
+| `register` | `true` | `false` skips all Metamist registration (the `test` profile sets it) |
+| `cram_qc` | `true` | `false` skips CRAM QC and the `cram_qc` analysis. The duplicate metrics are still published |
+| `qc_aligned` | `false` | also QC already-aligned SGs whose CRAM has no `cram_qc` analysis ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)). Needs `cram_qc` |
+| `register_wait_minutes` | 30 | how long registration polls for the published files |
+| `realignment_shards` | 0 | bazam shards per CRAM/BAM input; 0 means 6 for genomes and 1 for exomes |
+| `dupblaster_extra_args` | `''` | appended verbatim to the dupblaster command (see Running) |
+| `somalier_sites` | hg38 sites VCF | where somalier fingerprints each CRAM |
+| `verifybamid_container`, `picard_container`, `{genome,exome}_contam_{ud,bed,mu}`, `genome_coverage_interval_list`, `exome_evaluation_interval_list` | cpg-flow's | CRAM QC's images and references. With `cram_qc` on, the run fails at launch if the images or the sequencing type's references are unset |
 
 There is no `outputDir`: every destination is worked out per SG (see Outputs). The launcher supplies
 `-work-dir` and `google.project`; the config never sets them.
+
+**Two references across the cohort.** New CRAMs are written against `ref_fasta` (unmasked GATK hg38,
+alt-aware). CRAMs made before nf-align were written against the DRAGEN-masked FASTA, alt-unaware. A CRAM
+is only ever decoded with its own reference, which nf-align records as `ref_fasta` in each `cram`
+analysis's meta. Analysing new and old CRAMs together in one joint analysis needs a deliberate decision
+([ADR 0010](adr/0010-gatk-unmasked-reference-alt-aware.md)).
 
 ## Flow
 
 ```
 run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (or --samplesheet)
                                                              ▼
-          sample sheet ─ parse, per-SG destinations into meta ─┬─ aligned ────────────────────────────▶ (all_crams, for genotyping)
-                                                               └─ to align ─ pre-flight ─ ALIGN ─ publishDir: CRAM, .crai, duplicate metrics → SG's dataset bucket
-                                                                                            ├─ SOMALIER_EXTRACT ─ publishDir: .somalier → SG's dataset bucket
-                                                                                            │                   └─ REGISTER_CRAM (one cram analysis per SG, SG's dataset)
-                                                                                            └─ CRAM_QC ─ publishDir: QC metrics → SG's dataset bucket   │
-                                                                                                       └────────────────────────── REGISTER_CRAM_QC ◀───┘ (one cram_qc analysis per SG)
-                                                       then WRITE_RUN_RECORDS (crams.csv, failed.csv → analysis dataset bucket)
+sample sheet ─ parse rows, per-SG destinations into meta ─┬─ aligned ───────────────────────────────────────────────▶ all_crams (for genotyping)
+                                                          ├─ QC-only (--qc_aligned) ─┐                                  (QC-only SGs too)
+                                                          └─ to align ───────────────┴─ pre-flight
+                                                                                          │
+   to align: ALIGN ─ publishDir: CRAM, .crai, duplicate metrics → SG's dataset bucket ──▶ all_crams
+               ├─ SOMALIER_EXTRACT ─ publishDir: .somalier
+               │       └─ REGISTER_CRAM (one cram analysis: CRAM + .crai + .somalier) ─┐
+               └─ CRAM_QC ─ publishDir: QC metrics ────────────────────────────────────┴─ REGISTER_CRAM_QC (one cram_qc analysis)
+
+   QC-only:  CRAM_QC (the registered CRAM, its own reference) ─ publishDir: QC metrics ─ REGISTER_CRAM_QC
+
+then WRITE_RUN_RECORDS (crams.csv, failed.csv → analysis dataset bucket)
 ```
 
 ### 1. Sample sheet (`BUILD_SAMPLESHEET`, `bin/build_samplesheet.py`)
 
 - One GraphQL query, using the top-level `cohorts(id:)` or `sequencingGroups(id:)` lookup, so it isn't
   limited to one project. It fetches cohort status and the cohorts' SGs (`--cohorts`), or the named SGs
-  directly (`--sgids`), with each SG's project, assay meta and completed, active `cram` analyses. The
-  script takes `--access-level`, not a project.
+  directly (`--sgids`), with each SG's project, assay meta and completed, active `cram` and `cram_qc`
+  analyses. The script takes `--access-level`, not a project.
 - Cohorts that are missing (or not visible to the run's credentials), inactive or empty fail the run. So
   does an SG whose project doesn't match the access level: a production project in a test run, or a
   `-test` project in a full run. Every offender is reported in one error.
@@ -75,6 +124,7 @@ run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (or --s
   same CRAM), or empty. With `--qc_aligned`, an empty one makes the SG QC-only ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
 - Each row records the SG's `dataset`: its project, with any `-test` removed.
 - A run with no in-scope SG fails.
+- It logs how many SGs are already aligned, and how many of those lack a fingerprint or CRAM QC.
 - The sheet is published to `alignment_samplesheets/<arGuid>/samplesheet.tsv` in the analysis dataset
   bucket. A `--samplesheet` input is not republished, and must have a `dataset` column.
 
@@ -98,15 +148,22 @@ up front:
   would publish is checked in its SG's dataset bucket. If any exist, the run fails and lists them all. `aligned` rows
   are not checked: they publish nothing, and an existing CRAM is the expected state. An unregistered CRAM is a
   clash like any other, because the run only registers files it wrote
-  ([ADR 0013](adr/0013-only-register-files-this-run-wrote.md)).
+  ([ADR 0013](adr/0013-only-register-files-this-run-wrote.md)). A QC-only SG's QC tools' files are checked
+  the same way, so QC files left by an earlier, failed attempt stop the run until they're deleted.
 
 A run that passes the check records the outputs it claims in `<workDir>/nf-align-claims/<sessionId>.txt`.
 `-resume` keeps the session ID, so a resumed run lets those outputs exist and republishes them from the
 cached tasks (or, where they're already there, skips them). Anything else that already exists still
 fails the run.
 
-Two runs launched close together for the same SG can both pass the check. That gap is accepted
+Two runs launched close together for the same SG can both pass the check. The second run's publish is
+then skipped silently, and it registers the first run's CRAM under its own `ar-guid`. That gap is accepted
 (ADR 0009).
+
+Before this, at launch, `main.nf` validates params and fails on anything missing or malformed (see Scope
+of a run). A sheet row with an unknown `kind`, a `cram` row without `reads_ref`, a row without `dataset`, or
+a QC-only SG whose reference isn't a `.fasta`, `.fa` or `.fna` (so Picard can't find its `.dict`) also fails
+the run.
 
 ### 3. ALIGN subworkflow
 
@@ -133,8 +190,12 @@ Two runs launched close together for the same SG can both pass the check. That g
 
 - **Guards:** every script runs under `set -euo pipefail`. `check_alignments.sh` runs `samtools quickcheck`
   and requires at least one record, on every shard BAM and every final CRAM.
-- **Emits:** `cram` (newly aligned only), `markdup`, and `all_crams` (new crams plus `aligned` rows, with
-  no tasks of their own), which is ready for genotyping.
+- **Reference:** `ref_fasta` is staged with its `.fai`, bwa-mem3 index, `.alt` and alt-annotated `.dict`
+  side by side, so the FASTA's own name is the index prefix and the `@SQ` lines keep their `AH` tags
+  ([ADR 0010](adr/0010-gatk-unmasked-reference-alt-aware.md)). Swapping the `.alt` or `.dict`, or dropping
+  `alt` from `ref_suffixes` in `main.nf`, changes how reads are placed and needs a new ADR.
+- **Emits:** `cram` (newly aligned only), `markdup`, and `all_crams` (new CRAMs plus every already-aligned
+  SG, QC-only or not, with no tasks of their own), which is ready for genotyping.
 
 ### 4. Outputs
 
@@ -175,11 +236,23 @@ Only newly aligned SGs are published, apart from a QC-only SG's QC tools' files
 Each per-SG task's `dataset` resource label is `meta.dataset`, so its cost goes to the SG's dataset.
 `BUILD_SAMPLESHEET` and `WRITE_RUN_RECORDS` are labelled with the analysis dataset.
 
-### 5. CRAM QC (`CRAM_QC`)
+### 5. Fingerprint (`SOMALIER_EXTRACT`)
+
+Every newly aligned CRAM is fingerprinted with `somalier extract` at `somalier_sites`, against `ref_fasta`
+(only the FASTA and `.fai` are staged). The `.somalier` is published beside the CRAM and registered as a
+secondary file of the CRAM's own analysis, so a CRAM whose fingerprint failed isn't registered
+([ADR 0012](adr/0012-one-analysis-per-cram.md)).
+
+Already-aligned SGs are never fingerprinted (no **gapfill**): their `cram` analysis already exists, and
+`cpg_utils.metamist_registration` can only create analyses, not add a secondary file to one. CRAMs
+registered before nf-align fingerprinted have no fingerprint, and this pipeline won't make one.
+
+### 6. CRAM QC (`CRAM_QC`)
 
 When `cram_qc` is true (the default), every newly aligned CRAM is QC'd alongside its fingerprint, as
 cpg-flow's `CramQc*` stages did ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)). There are three
-tasks, one per image, each staging the CRAM with the alignment reference's FASTA, `.fai` and `.dict`:
+tasks, one per image, each staging the CRAM with the FASTA, `.fai` and `.dict` of the reference it was
+written against (`ref_fasta` and `ref_fasta_dict` for a new CRAM):
 
 - `VERIFYBAMID`: VerifyBamID2 against the sequencing type's 1000G contamination resources
   (`<type>_contam_{ud,bed,mu}`), capped at depth 1000 for exomes.
@@ -189,8 +262,12 @@ tasks, one per image, each staging the CRAM with the alignment reference's FASTA
   both bait and target (exome). The interval list is passed through BED and back with the `.dict`, so its
   header matches the alignment reference whichever hg38 build it was made against.
 
-An SG comes out of `CRAM_QC` only if all three succeeded. A QC failure never touches the CRAM's own
-registration.
+An SG comes out of `CRAM_QC` only if all three succeeded, so CRAM QC is all or nothing. A QC failure never
+touches the CRAM's own registration. All of an SG's metrics, including the duplicate metrics from
+alignment, go in one folder, `[exome/]cram_qc/<sg>/`, rather than cpg-flow's per-tool `qc/<tool>/` folders.
+The file names inside it are cpg-flow's, so MultiQC's filename patterns still match, but path-based
+consumers written for cpg-flow (such as its `CramMultiQC` stage) need to read the `cram_qc` analysis or the
+new folder.
 
 Already-aligned SGs aren't QC'd unless `--qc_aligned true` is set
 ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)). Then each one whose sample sheet row has an
@@ -199,9 +276,11 @@ written with (`reads_ref`, or `aligned_ref_fasta`, with the `<name>.dict` beside
 runs for it. Only the three tools' files are published, and the pre-flight check covers them. A run whose SGs
 are all aligned does only QC.
 
-### 6. Registration (`REGISTER_CRAM`, `REGISTER_CRAM_QC`)
+### 7. Registration (`REGISTER_CRAM`, `REGISTER_CRAM_QC`)
 
-Both are the `REGISTER_ANALYSIS` process, included twice. `REGISTER_CRAM` runs once per newly aligned SG,
+Both are the `REGISTER_ANALYSIS` process, included twice, and neither runs with `--register false`. A run
+only registers files it wrote ([ADR 0013](adr/0013-only-register-files-this-run-wrote.md)), with one
+exception: a QC-only SG's duplicate metrics, below. `REGISTER_CRAM` runs once per newly aligned SG,
 after its CRAM is fingerprinted, in the SG's own Metamist project. Each CRAM gets a single `cram` analysis, with its index and fingerprint as
 secondary files ([ADR 0012](adr/0012-one-analysis-per-cram.md)). A CRAM whose fingerprint failed isn't
 registered. The URIs come from `meta`, and the task polls for up to `register_wait_minutes` until the CRAM,
@@ -235,9 +314,14 @@ dataset-level `qc` of cpg-flow's MultiQC reports, and has to exist in Metamist b
 A QC-only SG's `cram_qc` analysis is registered as soon as its QC is done. Its `--output` is the registered
 CRAM, from the sample sheet's `reads`. Its duplicate metrics come from the run that aligned it, and are added
 only if they're in the SG's dataset at `[exome/]cram_qc/<sg>/` (nf-align) or `[exome/]qc/markduplicates_metrics/`
-(cpg-flow).
+(cpg-flow). Otherwise the analysis has no `markduplicates_metrics` key, so consumers can't rely on that key;
+the other secondary files are always all present.
 
-### 7. Failures
+The sample sheet builder only counts a `cram_qc` analysis whose primary file is the SG's current CRAM, so a
+realigned CRAM isn't covered by its predecessor's QC, and a QC-only run never leaves two active `cram_qc`
+analyses for one CRAM.
+
+### 8. Failures
 
 - **Per-SG tasks:** an exit code of 137 or 140 (OOM) is retried twice, with memory scaled by the attempt
   number. Any other failure is **ignored**: that SG is dropped and the rest carry on
@@ -253,7 +337,29 @@ only if they're in the SG's dataset at `[exome/]cram_qc/<sg>/` (nf-align) or `[e
   check stops on it until it's registered or deleted by hand. An SG that failed at `qc` or `register_qc` has a
   registered CRAM, so later runs take it as already aligned. Only a `--qc_aligned` run retries its QC, once
   its leftover QC files are deleted. A QC-only SG can only fail at `qc` or `register_qc`. **The run still
-  exits 0.**
+  exits 0.** Anything automated has to read `failed.csv` (or the warning), not the exit status.
+
+## Accepted gaps
+
+These follow from the decisions above, and are accepted for now:
+
+- **Concurrent runs:** two runs launched close together for the same SG can both pass the pre-flight
+  check, and the second registers the first run's CRAM (ADR 0009, ADR 0013).
+- **One stray file holds up the run:** an unregistered CRAM, or QC files from a failed attempt, stop every
+  SG in the run at the pre-flight check until someone registers or deletes them by hand (ADR 0013,
+  ADR 0015).
+- **No fingerprint gapfill:** CRAMs registered before nf-align fingerprinted stay without one. Adding one
+  needs a process that can update or replace their analyses (ADR 0012).
+- **QC gapfill is opt-in:** an SG whose QC failed stays without CRAM QC until a `--qc_aligned` run, after
+  its leftover QC files are deleted. `--qc_aligned` isn't the default, because every CRAM aligned by
+  cpg-flow has QC files but no `cram_qc` analysis, so any cohort run would quietly QC them all (ADR 0015).
+- **A QC-only analysis can include a file the run didn't write:** the duplicate metrics, found by path.
+  This bends ADR 0013, for a file that's evidence about the CRAM rather than the CRAM itself (ADR 0015).
+- **QC of a pre-nf-align CRAM** needs a `.dict` beside the DRAGEN-masked FASTA. Without one, Picard fails
+  and the SG is reported at `qc` (ADR 0015).
+- **The `cram_qc` analysis type** has to exist in Metamist before a registering run (ADR 0014).
+- **Alt awareness isn't covered by the stub tests:** their placeholder reference has no `.alt` or `.dict`.
+  Only real CRAMs show whether it took effect (ADR 0010, RISKS #22).
 
 ## Resources (`conf/base.config`)
 
@@ -323,18 +429,13 @@ verbatim to the dupblaster command, so quote it as you would for bash:
 
 ## Status and next steps
 
-**Done:** the multi-dataset design described above (ADR 0008, ADR 0009), implemented from
-[PLAN.md](PLAN.md): `build_samplesheet.py` with `--access-level`, top-level queries and a `dataset` column;
-per-SG destinations in `meta`; `publishDir` in place of the `output {}` block; `WRITE_RUN_RECORDS`; the
-run-records check; per-SG resource labels; per-SG registration projects. `nextflow lint` is clean, and 40
-tests pass. The stub runs span two datasets and cover every input kind, the exome layout, registration
-paths and projects (including `accessLevel test`), injected failures, the run-records and pre-flight
-clashes, -resume, cohorts and SG ID modes, a sheet row without a dataset, per-SG resource labels and
-parameter validation.
-
-**CRAM QC** ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)) is wired and stub-tested, as is
-`--qc_aligned` ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)) (58 tests). The QC scripts haven't
-run on real data.
+**Done**, and stub-tested: everything described above. That is the multi-dataset design (ADR 0008,
+ADR 0009, first implemented from [PLAN.md](PLAN.md)), fingerprinting with one `cram` analysis per CRAM
+(ADR 0012, ADR 0013), CRAM QC (ADR 0014) and `--qc_aligned` (ADR 0015). `nextflow lint` is clean, and the
+58 tests pass. The stub runs span two datasets and cover every input kind, the exome layout,
+registration paths and projects (including `accessLevel test`), injected failures, the run-records and
+pre-flight clashes, `-resume`, cohorts and SG ID modes, a sheet row without a dataset, per-SG resource labels,
+QC-only SGs and parameter validation.
 
 **Not done yet:**
 1. **A real run on a small test dataset.** Only stubs have run so far, so the process scripts (alignment and
