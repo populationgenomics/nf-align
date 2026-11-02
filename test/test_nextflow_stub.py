@@ -1,7 +1,7 @@
 """Offline `nextflow run -stub` checks of main.nf's wiring: branching by input kind, lane/shard fan-out and
 merges, CRAM QC, per-dataset published paths, registration, the run-records and pre-flight clash checks and
--resume, and the run records. The SGs span two datasets (conftest.cohort_sgs). Placeholder files stand in for data,
-and the tests are skipped when nextflow isn't on PATH."""
+-resume, and the published sample sheet. The SGs span two datasets (conftest.cohort_sgs). Placeholder files stand
+in for data, and the tests are skipped when nextflow isn't on PATH."""
 
 import csv
 import shutil
@@ -167,13 +167,8 @@ def test_every_input_kind_is_aligned_published_and_registered(run, tmp_path):
             assert {p.name for p in qc_dir(out, ds, sg_id).iterdir()} == set(qc_files(sg_id).values())
     assert not (out / PROJECT / 'qc').exists()
 
-    # the run records go to the analysis dataset only
-    index = read_tsv(run_dir(out) / 'crams.csv', sep=',')
-    assert list(index[0]) == ['sg_id', 'dataset', 'cram', 'crai']
-    assert {(r['sg_id'], r['dataset']) for r in index} == {(s, DATASET[s]) for s in NEW}
-    for r in index:
-        assert r['cram'] == str(cram_dir(out, r['dataset']) / f'{r["sg_id"]}.cram')
-        assert r['crai'] == f'{r["cram"]}.crai'
+    # the run records, just the sample sheet, go to the analysis dataset only
+    assert {p.name for p in run_dir(out).iterdir()} == {'samplesheet.tsv'}
     assert not (out / OTHER / 'alignment_samplesheets').exists()
     assert (run_dir(out) / 'samplesheet.tsv').read_text() == (tmp_path / 'sheet.tsv').read_text()
 
@@ -262,19 +257,15 @@ def test_aligned_sgs_without_cram_qc_are_qcd_without_realigning(run, tmp_path):
     assert f'--output {existing_cram(tmp_path, QC_ONLY)} --type cram_qc --secondary {secondary} --sgs' in command
     assert f'--project {PROJECT} --' in command
 
-    # the run records list only the CRAMs this run aligned
-    assert {r['sg_id'] for r in read_tsv(run_dir(out) / 'crams.csv', sep=',')} == NEW
-
 
 def test_a_run_with_nothing_to_align_only_qcs(run, tmp_path):
     sheet = tmp_path / 'sheet.tsv'
     write_sheet([r for r in read_tsv(sheet) if r['kind'] == 'aligned'], str(sheet))
-    result, out, tasks = run('--qc_aligned', 'true', '--register', 'true')
+    result, _out, tasks = run('--qc_aligned', 'true', '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
     processes = {t['name'].split(' ')[0].split(':')[-1] for t in tasks}
-    assert processes == {'BUILD_SAMPLESHEET', 'PREFLIGHT', *QC_PROCESSES, 'REGISTER_CRAM_QC', 'WRITE_RUN_RECORDS'}
+    assert processes == {'BUILD_SAMPLESHEET', 'PREFLIGHT', *QC_PROCESSES, 'REGISTER_CRAM_QC'}
     assert task_names(tasks, 'REGISTER_CRAM_QC') == {QC_ONLY}
-    assert (run_dir(out) / 'crams.csv').read_text() == 'sg_id,dataset,cram,crai\n'
 
 
 @pytest.mark.parametrize('rel', ['cram_qc/CPG7', 'qc/markduplicates_metrics'])
@@ -372,8 +363,7 @@ def test_failed_sgs_are_dropped(run, tmp_path):
     assert 'CPG1' in task_names(tasks, 'REGISTER_CRAM')
     assert task_names(tasks, 'REGISTER_CRAM_QC') == NEW - {'CPG1', 'CPG2', 'CPG3', 'CPG6'}
     assert (qc_dir(out, PROJECT, 'CPG1') / 'CPG1.verify-bamid.selfSM').exists()
-    assert {r['sg_id'] for r in read_tsv(run_dir(out) / 'crams.csv', sep=',')} == NEW - {'CPG3'}
-    assert not (run_dir(out) / 'failed.csv').exists()
+    assert {p.name for p in run_dir(out).iterdir()} == {'samplesheet.tsv'}
 
 
 def test_resume_finishes_the_sgs_that_failed(run, tmp_path):
@@ -389,7 +379,7 @@ def test_resume_finishes_the_sgs_that_failed(run, tmp_path):
 
     # the sample sheet is cached, so the resumed run carries on with the same SGs, though Metamist may have changed.
     # The pre-flight check passed in the first attempt and is cached, so CPG2's published CRAM isn't a clash, and
-    # only its failed task and the ones after it run. crams.csv already listed CPG2, so it's cached too
+    # only its failed task and the ones after it run
     result, _out, tasks = run('-resume', '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
     assert {'BUILD_SAMPLESHEET (standard)', 'PREFLIGHT'} <= {t['name'] for t in tasks if t['status'] == 'CACHED'}
@@ -437,7 +427,7 @@ def test_reusing_an_ar_guid_fails_before_any_task(run):
     assert result.returncode != 0
     console = result.stdout + result.stderr
     assert 'Run records for arGuid local-test already exist' in console
-    assert f'{run_dir(out)}/crams.csv' in console
+    assert f'{run_dir(out)}/samplesheet.tsv' in console
     assert not tasks
 
 
@@ -449,7 +439,7 @@ def test_resume_skips_the_pre_flight_check_it_passed(run):
     # -resume skips the run-records check
     result, out, tasks = run('-resume')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert {'BUILD_SAMPLESHEET (standard)', 'PREFLIGHT', 'WRITE_RUN_RECORDS'} <= {t['name'] for t in tasks}
+    assert {'BUILD_SAMPLESHEET (standard)', 'PREFLIGHT'} <= {t['name'] for t in tasks}
     assert {t['status'] for t in tasks} == {'CACHED'}
     for ds, sg_ids in NEW_BY_DATASET.items():
         assert {p.name for p in cram_dir(out, ds).glob('*.cram')} == {f'{s}.cram' for s in sg_ids}
@@ -527,7 +517,7 @@ def test_per_sg_tasks_are_labelled_with_the_sgs_dataset(run, tmp_path):
     )
     result, _out, tasks = run('-c', str(inject), '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
-    labelled = [t for t in tasks if t['name'] not in {'BUILD_SAMPLESHEET (standard)', 'PREFLIGHT', 'WRITE_RUN_RECORDS'}]
+    labelled = [t for t in tasks if t['name'] not in {'BUILD_SAMPLESHEET (standard)', 'PREFLIGHT'}]
     # SORT_INDEX 1, ALIGN_SHARD 6, MERGE_TO_CRAM 3, ALIGN_TO_CRAM 2, then 5 each of SOMALIER_EXTRACT, the three
     # QC processes, REGISTER_CRAM and REGISTER_CRAM_QC
     assert len(labelled) == 42

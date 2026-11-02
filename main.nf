@@ -9,7 +9,6 @@ include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
 include { PREFLIGHT } from './modules/local/preflight'
 include { REGISTER_ANALYSIS as REGISTER_CRAM } from './modules/local/register_analysis'
 include { REGISTER_ANALYSIS as REGISTER_CRAM_QC } from './modules/local/register_analysis'
-include { WRITE_RUN_RECORDS } from './modules/local/write_run_records'
 include { SOMALIER_EXTRACT } from './modules/local/somalier_extract'
 include { ALIGN } from './subworkflows/local/align'
 include { CRAM_QC } from './subworkflows/local/cram_qc'
@@ -77,7 +76,7 @@ def datasetRoot(ds) {
         : "gs://cpg-${ds}-${params.accessLevel == 'test' ? 'test' : 'main'}"
 }
 
-// per-run records, in the analysis dataset: the sample sheet and the CRAM index
+// per-run records, in the analysis dataset: the sample sheet
 def runDir() {
     "${datasetRoot(params.dataset)}/alignment_samplesheets/${params.arGuid}"
 }
@@ -195,13 +194,9 @@ def checkNoRunRecords() {
     if (workflow.resume) {
         return
     }
-    def existing = ['samplesheet.tsv', 'crams.csv']
-        .collect { name -> "${runDir()}/${name}" }
-        .findAll { uri -> file(uri).exists() }
-    if (existing) {
-        error(
-            "Run records for arGuid ${params.arGuid} already exist. Launch with a new --arGuid:\n  ${existing.join('\n  ')}"
-        )
+    def sheet = "${runDir()}/samplesheet.tsv"
+    if (file(sheet).exists()) {
+        error("Run records for arGuid ${params.arGuid} already exist. Launch with a new --arGuid:\n  ${sheet}")
     }
 }
 
@@ -339,11 +334,4 @@ workflow {
             params.register_wait_minutes,
         )
     }
-
-    // the published URIs of each newly aligned CRAM, sorted so the records don't depend on task completion order and
-    // -resume finds the task cached. Emits [] when nothing arrives, so the file is always written
-    def crams = ALIGN.out.cram.map { meta, _cram, _crai ->
-        [sg_id: meta.id, dataset: meta.dataset, cram: meta.cram, crai: "${meta.cram}.crai".toString()]
-    }
-    WRITE_RUN_RECORDS(crams.toSortedList { a, b -> a.sg_id <=> b.sg_id }, runDir())
 }

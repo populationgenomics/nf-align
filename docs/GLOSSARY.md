@@ -159,7 +159,7 @@ are never clashes (ADR 0016).
 
 **Run records**:
 The per-run directory `alignment_samplesheets/<ar-guid>/` in the analysis dataset bucket, holding the
-sample sheet and the index of published CRAMs. Failed SGs aren't recorded (ADR 0017).
+sample sheet. Neither the CRAMs the run produced (ADR 0019) nor its failed SGs (ADR 0017) are recorded there.
 
 **Failed SG**:
 An SG that didn't get through every step of a run: alignment, fingerprinting, registration, CRAM QC or its

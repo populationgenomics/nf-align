@@ -33,14 +33,14 @@ documentation.
 7. **A failed run exits 0, and says nothing about it.** ✅ Under `ignore`, see
    [ADR 0017](adr/0017-failed-sgs-are-dropped-not-reported.md). Launchers, Seqera Platform and any scripts
    watching the exit code will report success, and there's no `failed.csv`. Look at the failed tasks in
-   Seqera, or compare `crams.csv` with the sample sheet.
+   Seqera, or compare the analyses registered with this `ar-guid` in Metamist with the sample sheet.
 8. **Typed params need Nextflow 26.04.** ✅ (25.10.0, 26.04.4, 26.10.4, local) The `params {}` block in
    `main.nf` uses `String?` for optional params, which 25.10 can't parse, so `nextflowVersion` is `>=26.04`.
    Config values aren't type-checked, only command-line ones: `cohorts` declared `String?` still takes a list
    from a config file.
 9. **The run-records path is keyed on `arGuid`.** `arGuid` is unique in production, but it's set by
    hand while testing. With `overwrite: false`, a second run with the same `arGuid` would silently keep
-   the first run's `samplesheet.tsv` and `crams.csv`. The run-records check stops that run
+   the first run's `samplesheet.tsv`. The run-records check stops that run
    before the sample sheet is built. It's skipped on `-resume`, so resuming with the same session but a
    different set of inputs isn't caught.
 10. **Shard count is part of the task hash.** Changing `realignment_shards` between `-resume` runs

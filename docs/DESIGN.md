@@ -36,6 +36,7 @@ replaced it is described here.
 | [0016](adr/0016-preflight-check-is-a-cached-task.md) | the pre-flight check is a cached task, so `-resume` skips a check that passed | current |
 | [0017](adr/0017-failed-sgs-are-dropped-not-reported.md) | a failed SG is dropped, not reported; the run exits 0, and `-resume` picks it up | current (replaces 0007) |
 | [0018](adr/0018-every-run-builds-its-sheet-resume-continues-it.md) | no `--samplesheet`: every new run builds its sheet, and `-resume` carries on with the cached one | current |
+| [0019](adr/0019-no-crams-index-in-the-run-records.md) | no `crams.csv`: the run records are the sample sheet, and Metamist and Seqera say what the run produced | current |
 | [0001](adr/0001-one-dataset-one-sequencing-type-per-run.md), [0002](adr/0002-preflight-check-instead-of-overwrite-false.md), [0006](adr/0006-dragen-masked-reference-alt-unaware.md), [0007](adr/0007-ignore-failed-sgs-and-report.md), [0011](adr/0011-register-and-fingerprint-unregistered-crams.md) | | superseded |
 
 ADR 0006's DRAGEN-masked FASTA is still the reference assumed for CRAMs made before nf-align
@@ -105,8 +106,6 @@ sample sheet ─ parse rows, per-SG destinations into meta ─ PREFLIGHT (every 
                └─ CRAM_QC ─ publishDir: QC metrics ────────────────────────────────────┴─ REGISTER_CRAM_QC (one cram_qc analysis)
 
    QC-only:  CRAM_QC (the registered CRAM, its own reference) ─ publishDir: QC metrics ─ REGISTER_CRAM_QC
-
-then WRITE_RUN_RECORDS (crams.csv → analysis dataset bucket)
 ```
 
 ### 1. Sample sheet (`BUILD_SAMPLESHEET`, `bin/build_samplesheet.py`)
@@ -152,8 +151,8 @@ The pipeline never overwrites a file ([ADR 0009](adr/0009-never-overwrite-prefli
 up front:
 
 - **Run records**: before the sample sheet is built, the run fails if
-  `alignment_samplesheets/<arGuid>/` in the analysis dataset bucket already holds a `samplesheet.tsv` or
-  `crams.csv`. This guards against an `arGuid` reused by hand while testing. It's skipped
+  `alignment_samplesheets/<arGuid>/` in the analysis dataset bucket already holds a `samplesheet.tsv`.
+  This guards against an `arGuid` reused by hand while testing. It's skipped
   on `-resume`.
 - **Outputs** (`PREFLIGHT`): before anything is aligned, every CRAM, `.crai`, `.somalier` and QC metrics URI
   that the run would publish is checked in its SG's dataset bucket. If any exist, the run fails and lists them all. `aligned` rows
@@ -241,21 +240,17 @@ registration can't drift apart. `main.nf` stays the one place the layout is defi
 | duplicate metrics | `[exome/]cram_qc/<sg>/<sg>.markduplicates-metrics`, even with `--cram_qc false` |
 | CRAM QC ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)) | `[exome/]cram_qc/<sg>/`: `<sg>.verify-bamid.selfSM`, `<sg>.samtools-stats`, `<sg>.{alignment_summary,base_distribution_by_cycle,insert_size,quality_by_cycle,quality_yield}_metrics`, `<sg>.picard-{wgs,hs}-metrics` |
 
-Run records go under the analysis dataset's output root, at
-`alignment_samplesheets/<arGuid>/`:
-
-| file | written by |
-|---|---|
-| `samplesheet.tsv` | `BUILD_SAMPLESHEET` |
-| `crams.csv` (`sg_id, dataset, cram, crai`, the published URIs) | `WRITE_RUN_RECORDS`, a native (`exec:`) process that gets the collected records, sorted by SG |
-
-There is no record of failed SGs ([ADR 0017](adr/0017-failed-sgs-are-dropped-not-reported.md)).
+The run records are the sample sheet, `samplesheet.tsv`, published by `BUILD_SAMPLESHEET` to
+`alignment_samplesheets/<arGuid>/` under the analysis dataset's output root. There is no index of the CRAMs a
+run produced ([ADR 0019](adr/0019-no-crams-index-in-the-run-records.md)): each registered analysis records
+its `ar-guid`, and Seqera lists the tasks. There is no record of failed SGs either
+([ADR 0017](adr/0017-failed-sgs-are-dropped-not-reported.md)).
 
 Only newly aligned SGs are published, apart from a QC-only SG's QC tools' files
 ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
 
 Each per-SG task's `dataset` resource label is `meta.dataset`, so its cost goes to the SG's dataset.
-`BUILD_SAMPLESHEET`, `PREFLIGHT` and `WRITE_RUN_RECORDS` are labelled with the analysis dataset.
+`BUILD_SAMPLESHEET` and `PREFLIGHT` are labelled with the analysis dataset.
 
 ### 5. Fingerprint (`SOMALIER_EXTRACT`)
 
@@ -349,10 +344,9 @@ analyses for one CRAM.
   ([ADR 0017](adr/0017-failed-sgs-are-dropped-not-reported.md)).
 - **Registration** is retried once and then ignored.
 - **Spot preemption** is retried by `google.batch.maxSpotAttempts = 3`.
-- **`BUILD_SAMPLESHEET`**, **`PREFLIGHT`**, **`WRITE_RUN_RECORDS`** and the run-records check fail the
-  whole run.
+- **`BUILD_SAMPLESHEET`**, **`PREFLIGHT`** and the run-records check fail the whole run.
 - **No report:** dropped SGs aren't recorded or listed. **The run still exits 0.** Seqera Platform shows the
-  failed tasks, and `crams.csv` lists only the SGs that were aligned and published.
+  failed tasks, and Metamist the analyses the run registered, by `ar-guid`.
 - **Recovery is `-resume`:** the sample sheet is cached, so it carries on with the same SGs
   ([ADR 0018](adr/0018-every-run-builds-its-sheet-resume-continues-it.md)). It re-runs only the failed tasks
   and those after them, and the pre-flight check is cached, so the files the first attempt published don't
@@ -398,7 +392,7 @@ These follow from the decisions above, and are accepted for now:
 | `SAMTOOLS_STATS` | 4 | 4 GB × attempt | 100 / 20 GB | `e2-standard-4`, `e2-standard-4`, `e2-standard-8` |
 | `PICARD_METRICS` (two JVMs, 40% heap each) | 4 | 12 GB × attempt | 100 / 20 GB | `n2-standard-4`, `n2-highmem-4`, `n2-highmem-8` |
 | `BUILD_SAMPLESHEET`, `REGISTER_CRAM`, `REGISTER_CRAM_QC` | 1 | 4 / 2 GB | default | `e2-standard-2` |
-| `PREFLIGHT`, `WRITE_RUN_RECORDS` | native `exec:`, in the Nextflow process | | | |
+| `PREFLIGHT` | native `exec:`, in the Nextflow process | | | |
 
 **Every process names one exact `machineType`**, chosen by `task.attempt`, so an OOM retry lands on a
 bigger VM. Don't replace these with a list of types or a wildcard (`n2-*`). With
@@ -411,13 +405,13 @@ fit. The align processes use N2 because bwa-mem3 needs AVX2.
 ## Files
 
 ```
-main.nf                       param types and validation, run-records check, sample sheet, per-SG destinations and outputs, pre-flight, ALIGN, somalier, CRAM QC, registration, run records
+main.nf                       param types and validation, run-records check, sample sheet, per-SG destinations and outputs, pre-flight, ALIGN, somalier, CRAM QC, registration
 nextflow.config               param defaults, profiles (standard: Google Batch, docker, test)
 nextflow_schema.json          launch-form schema (main.nf does its own validation)
 conf/base.config              containers, resources, error strategy, per-SG resource labels, publishDir
 subworkflows/local/align/     ALIGN
 subworkflows/local/cram_qc/   CRAM_QC
-modules/local/<process>/      build_samplesheet, preflight, sort_index, align_to_cram, align_shard, merge_to_cram, somalier_extract, verifybamid, samtools_stats, picard_metrics, register_analysis, write_run_records
+modules/local/<process>/      build_samplesheet, preflight, sort_index, align_to_cram, align_shard, merge_to_cram, somalier_extract, verifybamid, samtools_stats, picard_metrics, register_analysis
 bin/build_samplesheet.py      cohorts or SG IDs, from any datasets -> sample sheet (needs only `metamist`)
 bin/align_stream.sh           per-kind input -> bwa-mem3 BAM stream
 bin/dedup_to_cram.sh          dupblaster -> sort -> CRAM 3.0 + metrics
@@ -461,7 +455,7 @@ verbatim to the dupblaster command, so quote it as you would for bash:
 **Done**, and stub-tested: everything described above. That is the multi-dataset design (ADR 0008,
 ADR 0009, first implemented from [PLAN.md](PLAN.md)), fingerprinting with one `cram` analysis per CRAM
 (ADR 0012, ADR 0013), CRAM QC (ADR 0014), `--qc_aligned` (ADR 0015), the cached pre-flight check
-(ADR 0016), dropping the failure report (ADR 0017) and removing `--samplesheet` (ADR 0018). `nextflow lint` is clean, and the 61 tests pass. The stub runs span two datasets and cover every input kind, the exome layout,
+(ADR 0016), dropping the failure report (ADR 0017) and removing `--samplesheet` (ADR 0018) and `crams.csv` (ADR 0019). `nextflow lint` is clean, and the 61 tests pass. The stub runs span two datasets and cover every input kind, the exome layout,
 registration paths and projects (including `accessLevel test`), injected failures, the run-records and
 pre-flight clashes, `-resume` (after success, after dropped SGs, and after a failed pre-flight check, each
 reusing the cached sample sheet),
