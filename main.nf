@@ -26,7 +26,6 @@ params {
     arGuid: String
     cohorts: String? // or a list, from a config file
     sgids: String?   // or a list, from a config file
-    samplesheet: Path?
     output_root: String?
 
     register: Boolean
@@ -174,8 +173,8 @@ def validateParams() {
     if (params.dupblaster_extra_args == 'true') {
         error("--dupblaster_extra_args must be a string of dupblaster arguments, got '${params.dupblaster_extra_args}'")
     }
-    if ([params.cohorts, params.sgids, params.samplesheet].count { input -> input } != 1) {
-        error('Provide exactly one of --cohorts, --sgids or --samplesheet')
+    if ([params.cohorts, params.sgids].count { input -> input } != 1) {
+        error('Provide exactly one of --cohorts or --sgids')
     }
     if (params.qc_aligned && !params.cram_qc) {
         error('--qc_aligned needs CRAM QC, so it can\'t be combined with --cram_qc false')
@@ -238,7 +237,7 @@ def parseRow(r) {
         cramDir: "${base}cram".toString(),
         qcDir: "${base}cram_qc/${r.sg_id}".toString(),
         // with --qc_aligned, an already-aligned SG whose CRAM has no cram_qc analysis gets CRAM QC, and nothing
-        // else (ADR 0015). A --samplesheet without the cram_qc column has every aligned SG QC'd
+        // else (ADR 0015)
         qcOnly: aligned && params.qc_aligned && !r.cram_qc,
     ]
     if (meta.qcOnly && !refDict(meta.ref)) {
@@ -265,18 +264,13 @@ workflow {
     def ref_suffixes = ['fai', 'bwt.2bit.64', 'amb', 'ann', 'pac', 'alt']
     def reference = channel.value([file(params.ref_fasta), file(params.ref_fasta_dict), ref_suffixes.collect { ext -> file("${params.ref_fasta}.${ext}") }])
 
-    // there are three entrypoints: --cohorts, --sgids and --samplesheet. Only a sheet built here is published
-    // to the run records; a --samplesheet input isn't
-    def sheet = channel.empty()
-    if (params.samplesheet) {
-        sheet = channel.fromPath(params.samplesheet, checkIfExists: true)
-    }
-    else {
-        // one of the two is empty: SGs are discovered through cohorts, or queried directly
-        def cohorts = params.cohorts ? idList(params.cohorts) : []
-        def sgids = params.sgids ? idList(params.sgids) : []
-        sheet = BUILD_SAMPLESHEET(params.accessLevel, params.sequencing_type, cohorts, sgids, params.aligned_ref_fasta, runDir())
-    }
+    // every run starts from a sheet built from Metamist: SGs are discovered through cohorts, or queried directly,
+    // and one of the two lists is empty. A resumed run takes the sheet from the cache, not from Metamist, which
+    // would by now see the SGs its first attempt registered as aligned. So it carries on with the same SGs, and
+    // the cached pre-flight check lets its own published files through (ADR 0018)
+    def cohorts = params.cohorts ? idList(params.cohorts) : []
+    def sgids = params.sgids ? idList(params.sgids) : []
+    def sheet = BUILD_SAMPLESHEET(params.accessLevel, params.sequencing_type, cohorts, sgids, params.aligned_ref_fasta, runDir())
 
     // hold every row until the whole sheet has passed the pre-flight check, so a clash fails the run before any
     // work starts. Already-aligned SGs that aren't QC-only publish nothing, and go no further

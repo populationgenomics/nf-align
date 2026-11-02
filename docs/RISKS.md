@@ -51,20 +51,19 @@ documentation.
 
 ## Re-running after a partial failure
 
-11. **Cohorts and SG ID modes recover by themselves; `--samplesheet` mode doesn't.** After a run where some SGs failed:
-    - **Cohorts / SG ID mode:** the successful SGs now have CRAM analyses, so they come back as `aligned`, and
-      only the failures are aligned again.
-    - **`--samplesheet` mode:** the successful SGs' CRAMs now exist, so the pre-flight check fails the
-      rerun. Remove those rows first, or rebuild the sheet from cohorts or SG IDs. A rerun also needs a
-      new `arGuid`, or the run-records check fails it.
+11. **A new run rebuilds the sheet; a resumed one doesn't.** There is no `--samplesheet` (ADR 0018). After a
+    run where some SGs failed:
+    - **A new run** (new `arGuid`): the successful SGs now have CRAM analyses, so they come back as `aligned`,
+      and only the failures are aligned again.
     - **Registration failures:** if registration failed, the CRAM and its fingerprint exist but aren't
-      registered, so either mode trips the pre-flight check on them until they're registered or deleted by hand.
+      registered, so a new run trips the pre-flight check on them until they're registered or deleted by hand.
     - **Fingerprint failures:** likewise, the CRAM is published but not registered, so the next run trips the
       pre-flight check on it (ADR 0013).
-    - **`-resume`** works in both modes, and is the way to recover: a passed pre-flight check is cached, so
-      the earlier attempt's outputs aren't clashes, and `publishDir` skips them (ADR 0016). Failed tasks,
-      including registrations, run again. In cohorts and SG ID modes the cached sample sheet is reused, so SGs
-      registered by the earlier attempt are republished from cache and not registered again. The cache lives
+    - **`-resume`** is the way to recover: a passed pre-flight check is cached, so the earlier attempt's
+      outputs aren't clashes, and `publishDir` skips them (ADR 0016). Failed tasks, including registrations,
+      run again. The cached sample sheet is reused, so SGs registered by the earlier attempt are republished
+      from cache and not registered again. If the sheet's inputs change between attempts (cohorts, SG IDs,
+      `aligned_ref_fasta`), it's rebuilt from Metamist, and the pre-flight check runs again and fails. The cache lives
       in the work dir, so cleaning the work dir (or resuming from a different one) brings the check back, and
       it then fails on the earlier attempt's files.
 

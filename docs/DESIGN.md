@@ -35,6 +35,7 @@ replaced it is described here.
 | [0015](adr/0015-qc-already-aligned-crams-on-request.md) | `--qc_aligned` gives CRAM QC to already-aligned SGs that lack it | current |
 | [0016](adr/0016-preflight-check-is-a-cached-task.md) | the pre-flight check is a cached task, so `-resume` skips a check that passed | current |
 | [0017](adr/0017-failed-sgs-are-dropped-not-reported.md) | a failed SG is dropped, not reported; the run exits 0, and `-resume` picks it up | current (replaces 0007) |
+| [0018](adr/0018-every-run-builds-its-sheet-resume-continues-it.md) | no `--samplesheet`: every new run builds its sheet, and `-resume` carries on with the cached one | current |
 | [0001](adr/0001-one-dataset-one-sequencing-type-per-run.md), [0002](adr/0002-preflight-check-instead-of-overwrite-false.md), [0006](adr/0006-dragen-masked-reference-alt-unaware.md), [0007](adr/0007-ignore-failed-sgs-and-report.md), [0011](adr/0011-register-and-fingerprint-unregistered-crams.md) | | superseded |
 
 ADR 0006's DRAGEN-masked FASTA is still the reference assumed for CRAMs made before nf-align
@@ -92,7 +93,7 @@ analysis's meta. Analysing new and old CRAMs together in one joint analysis need
 ## Flow
 
 ```
-run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (or --samplesheet)
+run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (cached on -resume)
                                                              ▼
 sample sheet ─ parse rows, per-SG destinations into meta ─ PREFLIGHT (every row) ─┬─ aligned: nothing more
                                                                                   ├─ QC-only (--qc_aligned)
@@ -132,15 +133,17 @@ then WRITE_RUN_RECORDS (crams.csv → analysis dataset bucket)
 - A run with no in-scope SG fails.
 - It logs how many SGs are already aligned, and how many of those lack a fingerprint or CRAM QC.
 - The sheet is published to `alignment_samplesheets/<arGuid>/samplesheet.tsv` in the analysis dataset
-  bucket. A `--samplesheet` input is not republished, and must have a `dataset` column.
+  bucket.
+- Every new run builds its sheet: there is no way to hand one in. A resumed run takes it from the cache, so
+  it carries on with the SGs its first attempt started with, and doesn't see what that attempt registered
+  ([ADR 0018](adr/0018-every-run-builds-its-sheet-resume-continues-it.md)).
 
 Columns: `sg_id, dataset, kind, n_units, unit, r1, r2, reads, reads_index, reads_ref, somalier, cram_qc`. For a CRAM,
 `reads_ref` is the reference it was written against, and is required: a CRAM is never decoded with `ref_fasta`.
 For ORA, it's the ORA reference tarball. For an `aligned` row, it's the `ref_fasta` its analysis's meta records
 (nf-align records it), or else `aligned_ref_fasta` (default: the DRAGEN-masked FASTA the CRAMs made before
 nf-align used, ADR 0006), which `main.nf` passes to the script. So `main.nf` never has to guess: an `aligned`
-row without `reads_ref`, which can only come from a `--samplesheet` input, fails the run like a `cram` row
-without one. `main.nf` doesn't read the `somalier` column.
+row without `reads_ref` fails the run like a `cram` row without one, though the builder never writes one. `main.nf` doesn't read the `somalier` column.
 
 ### 2. Pre-flight
 
@@ -350,9 +353,10 @@ analyses for one CRAM.
   whole run.
 - **No report:** dropped SGs aren't recorded or listed. **The run still exits 0.** Seqera Platform shows the
   failed tasks, and `crams.csv` lists only the SGs that were aligned and published.
-- **Recovery is `-resume`:** it re-runs only the failed tasks and those after them, and the pre-flight check
-  is cached, so the files the first attempt published don't stop it
-  ([ADR 0016](adr/0016-preflight-check-is-a-cached-task.md)). A new run (a new session) is different. An SG
+- **Recovery is `-resume`:** the sample sheet is cached, so it carries on with the same SGs
+  ([ADR 0018](adr/0018-every-run-builds-its-sheet-resume-continues-it.md)). It re-runs only the failed tasks
+  and those after them, and the pre-flight check is cached, so the files the first attempt published don't
+  stop it ([ADR 0016](adr/0016-preflight-check-is-a-cached-task.md)). A new run (a new session) is different. An SG
   that failed at fingerprinting or registration has a published CRAM but no analysis, and a new run's
   pre-flight check stops on it until it's registered or deleted by hand. An SG whose QC or QC registration
   failed has a registered CRAM, so a new run takes it as already aligned, and only a `--qc_aligned` run
@@ -433,9 +437,13 @@ nextflow run main.nf \
 # or realistically... 
 analysis-runner seqera ...
 
-# offline wiring check
-nextflow run main.nf -profile test -stub --dataset ds --sequencing_type genome \
-    --samplesheet sheet.tsv --ref_fasta refs/ref.fasta
+# recovery: the same params, with -resume
+nextflow run main.nf -resume ...
+
+# offline wiring check. Stub runs have no Metamist: sheet.config sets
+# process.withName:BUILD_SAMPLESHEET.ext.stub_samplesheet to a prepared sheet, or the sheet is empty
+nextflow run main.nf -profile test -stub -c sheet.config --dataset ds --sequencing_type genome \
+    --cohorts COH1 --ref_fasta refs/ref.fasta
 
 # tests (sample sheet unit tests + stub runs; the stub runs are skipped without nextflow)
 uv run pytest
@@ -453,9 +461,10 @@ verbatim to the dupblaster command, so quote it as you would for bash:
 **Done**, and stub-tested: everything described above. That is the multi-dataset design (ADR 0008,
 ADR 0009, first implemented from [PLAN.md](PLAN.md)), fingerprinting with one `cram` analysis per CRAM
 (ADR 0012, ADR 0013), CRAM QC (ADR 0014), `--qc_aligned` (ADR 0015), the cached pre-flight check
-(ADR 0016) and dropping the failure report (ADR 0017). `nextflow lint` is clean, and the 61 tests pass. The stub runs span two datasets and cover every input kind, the exome layout,
+(ADR 0016), dropping the failure report (ADR 0017) and removing `--samplesheet` (ADR 0018). `nextflow lint` is clean, and the 61 tests pass. The stub runs span two datasets and cover every input kind, the exome layout,
 registration paths and projects (including `accessLevel test`), injected failures, the run-records and
-pre-flight clashes, `-resume` (after success, after dropped SGs, and after a failed pre-flight check),
+pre-flight clashes, `-resume` (after success, after dropped SGs, and after a failed pre-flight check, each
+reusing the cached sample sheet),
 cohorts and SG ID modes, a sheet row without a dataset, per-SG resource labels,
 QC-only SGs and parameter validation.
 

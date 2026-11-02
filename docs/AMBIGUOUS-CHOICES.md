@@ -92,8 +92,7 @@ Part B was decided during implementation and **has not been explicitly confirmed
     check that the publish succeeded, or that it wasn't skipped. This matches what the workflow output
     index did before.
 20. **The run-records check fails if any one of the three files exists**, even when the other two are
-    missing. In `--samplesheet` mode `samplesheet.tsv` is never written, but the check still covers the
-    other two.
+    missing.
 21. **`WRITE_RUN_RECORDS` is a native `exec:` process**, not a `script:` process on the local executor.
     A spike on 26.10.4 showed that a file written to `task.workDir` from Groovy, and declared as a `path`
     output, is published by `publishDir`. It needs no container and no VM.
@@ -132,8 +131,8 @@ Part B was decided during implementation and **has not been explicitly confirmed
 34. **A QC-only SG's `.dict` is derived from its FASTA's name** (`<name>.fasta`, `.fa` or `.fna` ->
     `<name>.dict`), with no `aligned_ref_fasta_dict` param. Picard looks for it there anyway. A FASTA with
     any other extension fails the row.
-35. **A `--samplesheet` without a `cram_qc` column has every aligned SG QC'd** with `--qc_aligned`. An empty
-    column and a missing one look the same.
+35. **An aligned row with an empty `cram_qc` is QC'd** with `--qc_aligned`. An empty column and a missing one
+    look the same, but the builder always writes the column, and there's no other way to give a sheet (ADR 0018).
 36. **`--qc_aligned true --cram_qc false` fails at launch**, rather than quietly doing nothing.
 37. **QC-only SGs aren't listed in `crams.csv`.** It lists the CRAMs the run aligned, so a QC-only SG
     doesn't appear in the run records at all.
@@ -142,8 +141,7 @@ Part B was decided during implementation and **has not been explicitly confirmed
     `params {}` block exists, so the defaults can't move into the script. Each param is therefore named in
     both files.
 39. **`BUILD_SAMPLESHEET` fills in `aligned_ref_fasta`**, so every `aligned` row has a `reads_ref`, and `main.nf`
-    never guesses an aligned CRAM's reference. A `--samplesheet` input must now give it for `aligned` rows, or
-    the run fails at launch.
+    never guesses an aligned CRAM's reference.
 40. **Publishing routes files by name pattern** (`*.cram*` to `cramDir`, `*.markduplicates-metrics` and every QC
     tool's output to `qcDir`), not by a per-file map. A new output file in one of those processes would be
     published without being in `outputs(meta)`, so without a pre-flight check: add it to both.

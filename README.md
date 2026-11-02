@@ -17,9 +17,14 @@ nextflow run main.nf \
     --dataset <analysis dataset> --sequencing_type genome --arGuid <guid> --cohorts COH1,COH2 \
     --align_container <image> --cpg_container <image>
 
-# offline wiring check (outputs under results/<dataset>/), and the tests
-nextflow run main.nf -profile test -stub --dataset ds --sequencing_type genome \
-    --samplesheet sheet.tsv --ref_fasta refs/ref.fasta
+# recovery: relaunch with -resume and the same params. It carries on with the sample sheet it built, and runs only
+# the tasks that failed or never ran
+nextflow run main.nf -resume ...
+
+# offline wiring check (outputs under results/<dataset>/), and the tests. In stub mode the sheet comes from
+# process.withName:BUILD_SAMPLESHEET.ext.stub_samplesheet, set in sheet.config, or is empty
+nextflow run main.nf -profile test -stub -c sheet.config --dataset ds --sequencing_type genome \
+    --cohorts COH1 --ref_fasta refs/ref.fasta
 uv sync && uv run pytest
 ```
 

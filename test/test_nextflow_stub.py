@@ -64,11 +64,14 @@ def run_dir(out: Path, ar_guid: str = 'local-test') -> Path:
 def run(tmp_path, cohort_sgs):
     """
     Run main.nf in stub mode over a sheet with one SG per input kind, across two datasets, with PROJECT as the
-    analysis dataset; returns (result, output_root, trace rows).
+    analysis dataset; returns (result, output_root, trace rows). BUILD_SAMPLESHEET's stub hands over sheet.tsv,
+    which a test may edit before its first run.
     """
     refs = tmp_path / 'refs'
     sheet = tmp_path / 'sheet.tsv'
     write_sheet(build_rows(cohort_sgs, 'standard', 'genome', str(refs / 'masked.fasta')), str(sheet))
+    sheet_config = tmp_path / 'sheet.config'
+    sheet_config.write_text(f"process {{ withName: 'BUILD_SAMPLESHEET' {{ ext.stub_samplesheet = '{sheet}' }} }}\n")
     for name in ['ref.fasta', 'ref.fasta.fai', *(f'ref.fasta.{ext}' for ext in ['bwt.2bit.64', 'amb', 'ann', 'pac'])]:
         touch(refs / name)
     touch(refs / 'ref.dict')
@@ -85,7 +88,7 @@ def run(tmp_path, cohort_sgs):
     def _run(
         *args: str,
         sequencing_type: str = 'genome',
-        inputs: tuple = ('--samplesheet', str(sheet)),
+        inputs: tuple = ('--cohorts', 'COH1,COH2'),
         reference: tuple = ('--ref_fasta', str(refs / 'ref.fasta')),
         ar_guid: str = 'local-test',
         omit: tuple = (),  # CRAM QC references left off the command line
@@ -97,6 +100,7 @@ def run(tmp_path, cohort_sgs):
             [
                 'nextflow', 'run', str(MAIN_NF), '-stub', '-profile', 'test',
                 '-with-trace', str(trace),
+                '-c', str(sheet_config),
                 *inputs,
                 '--output_root', str(out),
                 '--dataset', PROJECT,
@@ -126,13 +130,18 @@ def task_names(tasks: list[dict], process: str) -> set[str]:
     return {t['name'].split('(')[1].rstrip(')') for t in tasks if t['name'].split(' ')[0].endswith(process)}
 
 
+def completed(tasks: list[dict]) -> set[str]:
+    """Names of the tasks that ran, other than building the sample sheet, which every new run does first."""
+    return {t['name'] for t in tasks if t['status'] == 'COMPLETED' and t['name'] != 'BUILD_SAMPLESHEET (standard)'}
+
+
 def task_dir(tasks: list[dict], tmp_path: Path, name: str) -> Path:
     """The work dir of the task with this name, e.g. 'REGISTER_CRAM (CPG1)'."""
     workdir = next(t for t in tasks if t['name'].startswith(name))['hash']
     return next((tmp_path / 'work').glob(f'{workdir}*'))
 
 
-def test_every_input_kind_is_aligned_published_and_registered(run):
+def test_every_input_kind_is_aligned_published_and_registered(run, tmp_path):
     result, out, tasks = run('--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -166,8 +175,7 @@ def test_every_input_kind_is_aligned_published_and_registered(run):
         assert r['cram'] == str(cram_dir(out, r['dataset']) / f'{r["sg_id"]}.cram')
         assert r['crai'] == f'{r["cram"]}.crai'
     assert not (out / OTHER / 'alignment_samplesheets').exists()
-    # a sheet passed with --samplesheet isn't republished
-    assert not (run_dir(out) / 'samplesheet.tsv').exists()
+    assert (run_dir(out) / 'samplesheet.tsv').read_text() == (tmp_path / 'sheet.tsv').read_text()
 
 
 def test_registration_uses_the_published_path_and_the_sgs_project(run, tmp_path):
@@ -264,7 +272,7 @@ def test_a_run_with_nothing_to_align_only_qcs(run, tmp_path):
     result, out, tasks = run('--qc_aligned', 'true', '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
     processes = {t['name'].split(' ')[0].split(':')[-1] for t in tasks}
-    assert processes == {'PREFLIGHT', *QC_PROCESSES, 'REGISTER_CRAM_QC', 'WRITE_RUN_RECORDS'}
+    assert processes == {'BUILD_SAMPLESHEET', 'PREFLIGHT', *QC_PROCESSES, 'REGISTER_CRAM_QC', 'WRITE_RUN_RECORDS'}
     assert task_names(tasks, 'REGISTER_CRAM_QC') == {QC_ONLY}
     assert (run_dir(out) / 'crams.csv').read_text() == 'sg_id,dataset,cram,crai\n'
 
@@ -289,7 +297,7 @@ def test_existing_qc_files_of_a_qc_only_sg_fail_the_run(run, tmp_path):
     console = result.stdout + result.stderr
     assert '1 output(s) already exist' in console
     assert f'{qc_dir(out, PROJECT, QC_ONLY)}/{QC_ONLY}.samtools-stats' in console
-    assert not [t for t in tasks if t['status'] == 'COMPLETED']
+    assert not completed(tasks)
 
 
 def test_failed_qc_of_a_qc_only_sg_is_not_registered(run, tmp_path):
@@ -379,11 +387,12 @@ def test_resume_finishes_the_sgs_that_failed(run, tmp_path):
     assert 'CPG2' not in task_names(tasks, 'REGISTER_CRAM')
     assert (cram_dir(out, PROJECT) / 'CPG2.cram').exists()
 
-    # the pre-flight check passed in the first attempt and is cached, so CPG2's published CRAM isn't a clash, and
+    # the sample sheet is cached, so the resumed run carries on with the same SGs, though Metamist may have changed.
+    # The pre-flight check passed in the first attempt and is cached, so CPG2's published CRAM isn't a clash, and
     # only its failed task and the ones after it run. crams.csv already listed CPG2, so it's cached too
     result, _out, tasks = run('-resume', '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert 'PREFLIGHT' in {t['name'] for t in tasks if t['status'] == 'CACHED'}
+    assert {'BUILD_SAMPLESHEET (standard)', 'PREFLIGHT'} <= {t['name'] for t in tasks if t['status'] == 'CACHED'}
     ran = {t['name'] for t in tasks if t['status'] == 'COMPLETED'}
     assert ran == {'SOMALIER_EXTRACT (CPG2)', 'REGISTER_CRAM (CPG2)', 'REGISTER_CRAM_QC (CPG2)'}
 
@@ -406,7 +415,7 @@ def test_existing_outputs_fail_the_run_before_any_alignment(run):
     assert f'{qc_dir(out, PROJECT, "CPG1")}/CPG1.markduplicates-metrics' in console
     assert f'{qc_dir(out, PROJECT, "CPG1")}/CPG1.verify-bamid.selfSM' in console
     assert 'CPG9' not in console
-    assert not [t for t in tasks if t['status'] == 'COMPLETED']
+    assert not completed(tasks)
 
 
 def test_resume_checks_again_after_a_failed_pre_flight_check(run, tmp_path):
@@ -417,7 +426,7 @@ def test_resume_checks_again_after_a_failed_pre_flight_check(run, tmp_path):
         assert result.returncode != 0
         assert '1 output(s) already exist' in result.stdout + result.stderr
         assert str(clash) in result.stdout + result.stderr
-        assert not [t for t in tasks if t['status'] == 'COMPLETED']
+        assert not completed(tasks)
 
 
 def test_reusing_an_ar_guid_fails_before_any_task(run):
@@ -440,24 +449,26 @@ def test_resume_skips_the_pre_flight_check_it_passed(run):
     # -resume skips the run-records check
     result, out, tasks = run('-resume')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert {'PREFLIGHT', 'WRITE_RUN_RECORDS'} <= {t['name'] for t in tasks}
+    assert {'BUILD_SAMPLESHEET (standard)', 'PREFLIGHT', 'WRITE_RUN_RECORDS'} <= {t['name'] for t in tasks}
     assert {t['status'] for t in tasks} == {'CACHED'}
     for ds, sg_ids in NEW_BY_DATASET.items():
         assert {p.name for p in cram_dir(out, ds).glob('*.cram')} == {f'{s}.cram' for s in sg_ids}
 
 
-def test_cohorts_mode_publishes_the_built_sheet(run):
-    result, out, tasks = run(inputs=('--cohorts', 'COH1,COH2'))
+@pytest.mark.parametrize('inputs', [('--cohorts', 'COH1,COH2'), ('--sgids', 'CPG1,CPG2')])
+def test_cohorts_or_sgids_are_built_into_the_published_sheet(run, inputs):
+    result, out, tasks = run(inputs=inputs)
     assert result.returncode == 0, result.stdout + result.stderr
     assert task_names(tasks, 'BUILD_SAMPLESHEET') == {'standard'}
     assert (run_dir(out) / 'samplesheet.tsv').exists()
 
 
-def test_sgids_mode_publishes_the_built_sheet(run):
-    result, out, tasks = run(inputs=('--sgids', 'CPG1,CPG2'))
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert task_names(tasks, 'BUILD_SAMPLESHEET') == {'standard'}
-    assert (run_dir(out) / 'samplesheet.tsv').exists()
+@pytest.mark.parametrize('inputs', [(), ('--cohorts', 'COH1', '--sgids', 'CPG1')])
+def test_exactly_one_of_cohorts_or_sgids_is_needed(run, inputs):
+    result, _out, tasks = run(inputs=inputs)
+    assert result.returncode != 0
+    assert 'Provide exactly one of --cohorts or --sgids' in result.stdout + result.stderr
+    assert not tasks
 
 
 @pytest.mark.parametrize(
@@ -465,8 +476,6 @@ def test_sgids_mode_publishes_the_built_sheet(run):
     [
         (('--sequencing_type', 'wgs'), "--sequencing_type must be genome or exome, got 'wgs'"),
         (('--accessLevel', 'prod'), "--accessLevel must be full, standard or test, got 'prod'"),
-        (('--cohorts', 'COH1'), 'Provide exactly one of --cohorts, --sgids or --samplesheet'),
-        (('--sgids', 'CPG1'), 'Provide exactly one of --cohorts, --sgids or --samplesheet'),
         (('--dupblaster_extra_args',), '--dupblaster_extra_args must be a string of dupblaster arguments'),
         (('--cram_qc', 'maybe'), 'Parameter `cram_qc` with type Boolean cannot be assigned to maybe'),
         (('--qc_aligned', 'maybe'), 'Parameter `qc_aligned` with type Boolean cannot be assigned to maybe'),
@@ -492,7 +501,7 @@ def test_cram_row_without_a_reference_fails_early(run, tmp_path, kind, sg_id):
     result, _out, tasks = run()
     assert result.returncode != 0
     assert f'{sg_id}: {kind} rows need reads_ref' in result.stdout + result.stderr
-    assert not [t for t in tasks if t['status'] == 'COMPLETED']
+    assert not completed(tasks)
 
 
 def test_row_without_a_dataset_fails_early(run, tmp_path):
@@ -503,7 +512,7 @@ def test_row_without_a_dataset_fails_early(run, tmp_path):
     result, _out, tasks = run()
     assert result.returncode != 0
     assert 'CPG1: a row needs dataset, the dataset the SG belongs to' in result.stdout + result.stderr
-    assert not [t for t in tasks if t['status'] == 'COMPLETED']
+    assert not completed(tasks)
 
 
 def test_per_sg_tasks_are_labelled_with_the_sgs_dataset(run, tmp_path):
@@ -518,7 +527,7 @@ def test_per_sg_tasks_are_labelled_with_the_sgs_dataset(run, tmp_path):
     )
     result, _out, tasks = run('-c', str(inject), '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
-    labelled = [t for t in tasks if t['name'] not in {'PREFLIGHT', 'WRITE_RUN_RECORDS'}]
+    labelled = [t for t in tasks if t['name'] not in {'BUILD_SAMPLESHEET (standard)', 'PREFLIGHT', 'WRITE_RUN_RECORDS'}]
     # SORT_INDEX 1, ALIGN_SHARD 6, MERGE_TO_CRAM 3, ALIGN_TO_CRAM 2, then 5 each of SOMALIER_EXTRACT, the three
     # QC processes, REGISTER_CRAM and REGISTER_CRAM_QC
     assert len(labelled) == 42

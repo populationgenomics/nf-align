@@ -27,7 +27,14 @@ process BUILD_SAMPLESHEET {
     """
 
     stub:
-    """
-    printf 'sg_id\\tdataset\\tkind\\tn_units\\tunit\\tr1\\tr2\\treads\\treads_index\\treads_ref\\tsomalier\\n' > samplesheet.tsv
-    """
+    // stub runs have no Metamist, so a test config can hand over a prepared sheet; otherwise it's empty
+    def prepared = task.ext.stub_samplesheet
+    if (prepared) {
+        "cp ${prepared} samplesheet.tsv"
+    }
+    else {
+        """
+        printf 'sg_id\\tdataset\\tkind\\tn_units\\tunit\\tr1\\tr2\\treads\\treads_index\\treads_ref\\tsomalier\\n' > samplesheet.tsv
+        """
+    }
 }
