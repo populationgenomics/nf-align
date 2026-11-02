@@ -249,8 +249,17 @@ its `ar-guid`, and Seqera lists the tasks. There is no record of failed SGs eith
 Only newly aligned SGs are published, apart from a QC-only SG's QC tools' files
 ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
 
-Each per-SG task's `dataset` resource label is `meta.dataset`, so its cost goes to the SG's dataset.
-`BUILD_SAMPLESHEET` and `PREFLIGHT` are labelled with the analysis dataset.
+Each per-SG task's `dataset` resource label is `meta.dataset`. `BUILD_SAMPLESHEET` and `PREFLIGHT` are
+labelled with the analysis dataset. What the label does to billing depends on the GCP project the run is in
+(the CPG billing aggregator, `cpg-infrastructure/cpg_infra/billing_aggregator/aggregate/`):
+
+- **Analysis dataset `seqr`**: `seqr.py` charges each labelled row in full to `topic=<label>`, and adds a
+  matching credit on `seqr`. Each SG's compute is billed to its own dataset, and the run-level tasks net
+  to zero on `seqr`. A view that leaves out the `-credit` rows shows the same cost under `seqr` and under
+  the SG's dataset. Without the label, the cost would be spread across all seqr datasets by size.
+- **Any other analysis dataset**: `gcp.py` takes `topic` from the GCP project alone, so the whole run is
+  billed to the analysis dataset. The label only fills the `dataset` column of the extended billing view,
+  for breaking the run's cost down by SG dataset.
 
 ### 5. Fingerprint (`SOMALIER_EXTRACT`)
 
