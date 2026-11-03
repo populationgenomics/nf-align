@@ -4,7 +4,7 @@
  * CollectHsMetrics (exome), each JVM with 40% of the task's memory.
  *
  * htsjdk's CRAM decoding is single-threaded, and was most of the task's time, so samtools decodes the CRAM
- * instead, multi-threaded, and streams each JVM uncompressed BAM on stdin.
+ * instead, once and multi-threaded, and tee streams the uncompressed BAM to both JVMs.
  */
 process PICARD_METRICS {
     tag "${meta.id}"
@@ -28,27 +28,27 @@ process PICARD_METRICS {
 
     script:
     def heap = "-Xmx${(task.memory.toMega() * 0.4) as int}m"
-    // decode threads per stream, on top of samtools' own
-    def threads = Math.max(1, task.cpus.intdiv(2) - 1)
-    // a stream has no index, so picard can't do the indexed lookup of the coverage regions it would on the CRAM:
-    // samtools does it instead (-M -L: each read overlapping the regions, once). HsMetrics needs every read
-    def regions = sequencing_type == 'genome' ? '-M -L intervals.bed' : ''
+    // decode threads, on top of samtools' own. The JVMs take a core each, but a decode thread with nowhere to
+    // write blocks on the pipe, so these only run when picard keeps up
+    def threads = Math.max(1, task.cpus - 1)
     // the interval lists' headers carry the md5s of the reference they were made against (the DRAGEN-masked
     // one, for the genome coverage regions), and picard fails on a mismatch. A round trip through BED drops the
-    // header, and re-adds it from this CRAM's .dict: the same regions, against the right reference
+    // header, and re-adds it from this CRAM's .dict: the same regions, against the right reference.
+    // A stream has no index, so picard reads every record and skips those outside the regions itself
     def coverage = sequencing_type == 'genome'
         ? """
-        decode ${regions} | picard ${heap} CollectWgsMetrics \\
+        picard ${heap} CollectWgsMetrics \\
             -I /dev/stdin \\
             -R ${fasta} \\
             -O ${meta.id}.picard-wgs-metrics \\
             --VALIDATION_STRINGENCY SILENT \\
             --INTERVALS intervals.interval_list \\
             --USE_FAST_ALGORITHM true \\
-            --READ_LENGTH 250
+            --READ_LENGTH 250 \\
+            < coverage.fifo &
         """
         : """
-        decode | picard ${heap} CollectHsMetrics \\
+        picard ${heap} CollectHsMetrics \\
             -I /dev/stdin \\
             -R ${fasta} \\
             -O ${meta.id}.picard-hs-metrics \\
@@ -57,19 +57,17 @@ process PICARD_METRICS {
             -BI intervals.interval_list \\
             -LEVEL null \\
             -LEVEL SAMPLE \\
-            -LEVEL LIBRARY
+            -LEVEL LIBRARY \\
+            < coverage.fifo &
         """
     """
-    # the CRAM, as uncompressed BAM. A reader may close the stream before its end (CollectWgsMetrics stops after
-    # its last interval), and samtools' SIGPIPE (141) then isn't a failure: each pipeline's status is picard's
-    decode() {
-        samtools view -@${threads} -u -T ${fasta} "\$@" ${cram} || [ \$? -eq 141 ]
-    }
-
     picard IntervalListToBed -I ${intervals} -O intervals.bed
     picard BedToIntervalList -I intervals.bed -O intervals.interval_list -SD ${dict}
 
-    decode | picard ${heap} CollectMultipleMetrics \\
+    # each JVM reads the CRAM, decoded once, as uncompressed BAM from its own FIFO
+    mkfifo multiple.fifo coverage.fifo
+
+    picard ${heap} CollectMultipleMetrics \\
         -I /dev/stdin \\
         -R ${fasta} \\
         -O ${meta.id} \\
@@ -82,13 +80,20 @@ process PICARD_METRICS {
         -PROGRAM CollectBaseDistributionByCycle \\
         -PROGRAM CollectQualityYieldMetrics \\
         -LEVEL null \\
-        -LEVEL SAMPLE &
+        -LEVEL SAMPLE \\
+        < multiple.fifo &
     multiple=\$!
 
-    ${coverage}
+    ${coverage.trim()}
+    coverage=\$!
 
-    # under set -e, a failed CollectMultipleMetrics fails the task here
+    # CollectWgsMetrics closes its FIFO after its last interval: -p (GNU tee) drops a reader that's gone, and
+    # carries on feeding the other, rather than dying of SIGPIPE. A reader's failure is caught by its wait
+    samtools view -@${threads} -u -T ${fasta} ${cram} | tee -p coverage.fifo > multiple.fifo
+
+    # under set -e, a failed JVM fails the task here
     wait \$multiple
+    wait \$coverage
     """
 
     stub:
