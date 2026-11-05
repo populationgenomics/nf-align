@@ -42,7 +42,7 @@ process PICARD_METRICS {
             -R ${fasta} \\
             -O ${meta.id}.picard-wgs-metrics \\
             --VALIDATION_STRINGENCY SILENT \\
-            --INTERVALS intervals.interval_list \\
+            --INTERVALS ${intervals} \\
             --USE_FAST_ALGORITHM true \\
             --READ_LENGTH 250 \\
             < coverage.fifo &
@@ -53,16 +53,14 @@ process PICARD_METRICS {
             -R ${fasta} \\
             -O ${meta.id}.picard-hs-metrics \\
             --VALIDATION_STRINGENCY SILENT \\
-            -TI intervals.interval_list \\
-            -BI intervals.interval_list \\
+            -TI ${intervals} \\
+            -BI ${intervals} \\
             -LEVEL null \\
             -LEVEL SAMPLE \\
             -LEVEL LIBRARY \\
             < coverage.fifo &
         """
     """
-    picard IntervalListToBed -I ${intervals} -O intervals.bed
-    picard BedToIntervalList -I intervals.bed -O intervals.interval_list -SD ${dict}
 
     # each JVM reads the CRAM, decoded once, as uncompressed BAM from its own FIFO
     mkfifo multiple.fifo coverage.fifo
