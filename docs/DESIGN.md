@@ -33,7 +33,7 @@ doesn't matter: a cohort in `alpha` that holds an SG from `beta` sends that SG's
 | `arGuid` | the analysis-runner GUID, used in resource labels, the per-run record directory and the registered analyses. Mandatory |
 | `cohorts` **or** `sgids` **or** `samplesheet` | exactly one: Metamist cohort IDs, Metamist SG IDs (queried directly), or a prepared sheet that skips the Metamist step |
 | `output_root` | null by default, so each dataset's outputs go to its bucket. If set (the `test` profile sets `results`), they go to `<output_root>/<ds>/` instead, with the same layout below that |
-| `ref_fasta` | the alignment reference. Its `.fai` and bwa-mem3 index (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac}`) must sit beside it ([ADR 0010](adr/0010-gatk-unmasked-reference-alt-unaware.md)) |
+| `ref_fasta` | the alignment reference. Its `.fai`, bwa-mem3 index and `.alt` (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac,alt}`) must sit beside it, and `ref_fasta_dict` is its alt-annotated `.dict`. Aligned alt-aware ([ADR 0010](adr/0010-gatk-unmasked-reference-alt-aware.md)) |
 | `align_container`, `cpg_container` | the images, with defaults in `nextflow.config`. The run fails at launch if either is unset, in every profile |
 
 There is no `outputDir`: every destination is worked out per SG (see Outputs). The launcher supplies
@@ -44,10 +44,11 @@ There is no `outputDir`: every destination is worked out per SG (see Outputs). T
 ```
 run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (or --samplesheet)
                                                              ▼
-          sample sheet ─ parse, per-SG destinations into meta ─┬─ aligned ──────────────────────▶ (all_crams, for genotyping)
-                                                               └─ to align ─ pre-flight ─ ALIGN ─┬─ publishDir: CRAM, .crai, metrics → SG's dataset bucket
-                                                                                                 └─ REGISTER_ANALYSIS (per SG, SG's dataset)
-                                    WRITE_RUN_RECORDS (crams.csv, failed.csv → analysis dataset bucket) ◀─┘
+          sample sheet ─ parse, per-SG destinations into meta ─┬─ aligned ────────────────────────────▶ (all_crams, for genotyping)
+                                                               └─ to align ─ pre-flight ─ ALIGN ─ publishDir: CRAM, .crai, metrics → SG's dataset bucket
+                                                                                            └─ SOMALIER_EXTRACT ─ publishDir: .somalier → SG's dataset bucket
+                                                                                                                └─ REGISTER_ANALYSIS (one cram analysis per SG, SG's dataset)
+                                                       then WRITE_RUN_RECORDS (crams.csv, failed.csv → analysis dataset bucket)
 ```
 
 ### 1. Sample sheet (`BUILD_SAMPLESHEET`, `bin/build_samplesheet.py`)
@@ -66,15 +67,18 @@ run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (or --s
 - Read locations are used **exactly as Metamist stores them**.
 - Each SG gets one row per alignment unit, with a `kind` (glossary): `fastq` and `fastq_ora` (one row
   per lane), `cram` or `bam` (one row), or `aligned` (it already has a CRAM analysis; one row pointing at
-  that CRAM).
+  that CRAM). An `aligned` row's `somalier` is that CRAM analysis's `somalier` secondary file, or empty if it
+  has none. It's for reference only: an aligned SG is never fingerprinted ([ADR 0012](adr/0012-one-analysis-per-cram.md)).
 - Each row records the SG's `dataset`: its project, with any `-test` removed.
 - A run with no in-scope SG fails.
 - The sheet is published to `alignment_samplesheets/<arGuid>/samplesheet.tsv` in the analysis dataset
   bucket. A `--samplesheet` input is not republished, and must have a `dataset` column.
 
-Columns: `sg_id, dataset, kind, n_units, unit, r1, r2, reads, reads_index, reads_ref`. For a CRAM, `reads_ref`
-is the reference it was written against, and is required: a CRAM is never decoded with `ref_fasta`. For ORA,
-it's the ORA reference tarball.
+Columns: `sg_id, dataset, kind, n_units, unit, r1, r2, reads, reads_index, reads_ref, somalier`. For a CRAM,
+`reads_ref` is the reference it was written against, and is required: a CRAM is never decoded with `ref_fasta`.
+For ORA, it's the ORA reference tarball. For an `aligned` row, it's the `ref_fasta` its analysis's meta records
+(nf-align records it); if empty, `aligned_ref_fasta` (default: the DRAGEN-masked FASTA the CRAMs made before
+nf-align used, ADR 0006) is assumed. `main.nf` doesn't read the `somalier` column.
 
 ### 2. Pre-flight
 
@@ -86,9 +90,11 @@ up front:
   `alignment_samplesheets/<arGuid>/` in the analysis dataset bucket already holds a `samplesheet.tsv`,
   `crams.csv` or `failed.csv`. This guards against an `arGuid` reused by hand while testing. It's skipped
   on `-resume`.
-- **Outputs**: before anything is aligned, every CRAM, `.crai` and metrics URI that the run would
-  publish is checked in its SG's dataset bucket. If any exist, the run fails and lists them all. `aligned` rows are not checked:
-for those, an existing CRAM is the expected state.
+- **Outputs**: before anything is aligned, every CRAM, `.crai`, `.somalier` and metrics URI that the run would
+  publish is checked in its SG's dataset bucket. If any exist, the run fails and lists them all. `aligned` rows
+  are not checked: they publish nothing, and an existing CRAM is the expected state. An unregistered CRAM is a
+  clash like any other, because the run only registers files it wrote
+  ([ADR 0013](adr/0013-only-register-files-this-run-wrote.md)).
 
 A run that passes the check records the outputs it claims in `<workDir>/nf-align-claims/<sessionId>.txt`.
 `-resume` keeps the session ID, so a resumed run lets those outputs exist and republishes them from the
@@ -137,7 +143,7 @@ next to the rest of its inputs:
 
 - `dataset`, and its Metamist project (`<ds>` or `<ds>-test`)
 - its output root: `gs://cpg-<ds>-{main|test}`, or `<output_root>/<ds>`
-- the relative paths of its CRAM, `.crai` and metrics
+- the relative paths of its CRAM, `.crai`, somalier fingerprint and metrics
 
 The `publishDir` settings in config only apply these values, and the pre-flight check and registration
 read the same `meta`, so publishing and registration can't drift apart. `main.nf` stays the one place the
@@ -146,6 +152,7 @@ layout is defined:
 | target | path under the SG's output root (`exome/` prefix for exomes) |
 |---|---|
 | CRAM + index | `[exome/]cram/<sg>.cram`, plus `.crai` |
+| somalier fingerprint | `[exome/]cram/<sg>.cram.somalier` (cpg-flow's `CramPath.somalier_path`) |
 | duplicate metrics | `[exome/]qc/markduplicates_metrics/<sg>.markduplicates-metrics` |
 
 Run records go under the analysis dataset's output root, at
@@ -164,14 +171,20 @@ Each per-SG task's `dataset` resource label is `meta.dataset`, so its cost goes 
 
 ### 5. Registration (`REGISTER_ANALYSIS`)
 
-When `register` is true, this runs once per new CRAM, in the SG's own Metamist project. It gets the
-CRAM URI from `meta`, and polls for up to `register_wait_minutes` until the CRAM and `.crai` exist, because publishing is
-asynchronous ([ADR 0005](adr/0005-registration-as-a-polling-process.md)). It then runs:
+When `register` is true, this runs once per newly aligned SG, after its CRAM is fingerprinted, in the
+SG's own Metamist project. Each CRAM gets a single `cram` analysis, with its index and fingerprint as
+secondary files ([ADR 0012](adr/0012-one-analysis-per-cram.md)). A CRAM whose fingerprint failed isn't
+registered. The URIs come from `meta`, and the task polls for up to `register_wait_minutes` until the CRAM,
+`.crai` and `.somalier` all exist, because publishing is asynchronous
+([ADR 0005](adr/0005-registration-as-a-polling-process.md)). It then runs:
 
 ```
 python3 -m cpg_utils.metamist_registration --project <SG's dataset>[-test] --output <cram> --type cram \
-    --secondary index=<cram>.crai --sgs <sg> --meta sequencing_type=<type> ar-guid=<arGuid>
+    --secondary index=<cram>.crai somalier=<cram>.somalier --sgs <sg> \
+    --meta sequencing_type=<type> ar-guid=<arGuid> ref_fasta=<CRAM's ref>
 ```
+
+The fingerprint is found at `outputs.secondary_files.somalier.path` on the CRAM analysis.
 
 Metrics are not registered.
 
@@ -185,7 +198,9 @@ Metrics are not registered.
 - **`BUILD_SAMPLESHEET`**, **`WRITE_RUN_RECORDS`**, the run-records check and the pre-flight check fail the
   whole run.
 - **Reporting:** dropped SGs are written to `alignment_samplesheets/<arGuid>/failed.csv` with the step
-  they failed at (`align` or `register`), and logged as a warning. **The run still exits 0.**
+  they failed at, and logged as a warning. Each SG has one row, at the first step it didn't get through:
+  `align`, `somalier`, then `register`. An SG that failed at `somalier` or `register` has a published CRAM
+  but no analysis, and the next run's pre-flight check stops on it until it's registered or deleted by hand. **The run still exits 0.**
 
 ## Resources (`conf/base.config`)
 
@@ -194,6 +209,7 @@ Metrics are not registered.
 | `ALIGN_TO_CRAM`, `ALIGN_SHARD` | 16 | 48 GB × attempt | 400 / 100 GB | `n2-standard-16`, `n2-highmem-16`, `n2-highmem-32` |
 | `MERGE_TO_CRAM` | 8 | 24 GB × attempt | 400 / 100 GB | `n2-standard-8`, `n2-highmem-8`, `n2-highmem-16` |
 | `SORT_INDEX` | 8 | 32 GB × attempt | 550 / 250 GB | `n2-highmem-8`, `n2-highmem-16`, `n2-highmem-16` |
+| `SOMALIER_EXTRACT` | 1 | 4 GB × attempt | 100 / 20 GB | `e2-standard-2`, `e2-standard-4`, `e2-standard-8` |
 | `BUILD_SAMPLESHEET`, `REGISTER_ANALYSIS` | 1 | 4 / 2 GB | default | `e2-standard-2` |
 | `WRITE_RUN_RECORDS` | native `exec:`, in the Nextflow process | | | |
 
@@ -208,12 +224,12 @@ fit. The align processes use N2 because bwa-mem3 needs AVX2.
 ## Files
 
 ```
-main.nf                       params validation, run-records check, sample sheet, per-SG destinations, pre-flight, ALIGN, registration, run records
+main.nf                       params validation, run-records check, sample sheet, per-SG destinations, pre-flight, ALIGN, somalier, registration, run records
 nextflow.config               params, profiles (standard: Google Batch, docker, test)
 nextflow_schema.json          launch-form schema (main.nf does its own validation)
 conf/base.config              containers, resources, error strategy, per-SG resource labels, publishDir
 subworkflows/local/align/     ALIGN
-modules/local/<process>/      build_samplesheet, sort_index, align_to_cram, align_shard, merge_to_cram, register_analysis, write_run_records
+modules/local/<process>/      build_samplesheet, sort_index, align_to_cram, align_shard, merge_to_cram, somalier_extract, register_analysis, write_run_records
 bin/build_samplesheet.py      cohorts or SG IDs, from any datasets -> sample sheet (needs only `metamist`)
 bin/align_stream.sh           per-kind input -> bwa-mem3 BAM stream
 bin/dedup_to_cram.sh          dupblaster -> sort -> CRAM 3.0 + metrics

@@ -23,7 +23,8 @@ that a clash in the middle of a run would fail loudly.
   `workflow.resume` is set.
 - **Unregistered CRAM:** a CRAM that was published but never registered (for example, because
   registration failed) stops the next run for that SG at the pre-flight check, until someone registers or
-  deletes the file.
+  deletes the file. A run never registers a file it didn't write
+  ([ADR 0013](0013-only-register-files-this-run-wrote.md)).
 - **Accepted gap:** two runs launched close together for the same SG can both pass the check. The second
   run's publish is then skipped silently, and its registration records the first run's CRAM under the
   second run's `ar-guid`. The CRAM itself is valid, and the sample sheet builder takes the latest CRAM

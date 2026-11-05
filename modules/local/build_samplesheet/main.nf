@@ -26,6 +26,6 @@ process BUILD_SAMPLESHEET {
 
     stub:
     """
-    printf 'sg_id\\tdataset\\tkind\\tn_units\\tunit\\tr1\\tr2\\treads\\treads_index\\treads_ref\\n' > samplesheet.tsv
+    printf 'sg_id\\tdataset\\tkind\\tn_units\\tunit\\tr1\\tr2\\treads\\treads_index\\treads_ref\\tsomalier\\n' > samplesheet.tsv
     """
 }

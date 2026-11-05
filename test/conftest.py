@@ -40,15 +40,28 @@ def fastq_meta(r1: str, r2: str, **extra: object) -> dict:
     return {'reads_type': 'fastq', 'reads': [{'location': r1}, {'location': r2}]} | extra
 
 
+def cram_analysis(analysis_id: int, output: str | None, somalier: str | None = None, **meta: str) -> dict:
+    """A CRAM analysis as nf-align registers it: the index, and the fingerprint if given, as secondary files."""
+    outputs = None
+    if output:
+        secondary = {'index': {'path': f'{output}.crai'}} | ({'somalier': {'path': somalier}} if somalier else {})
+        outputs = {'path': output, 'secondary_files': secondary}
+    return {'id': analysis_id, 'type': 'cram', 'output': output, 'outputs': outputs, 'meta': meta}
+
+
 @pytest.fixture
 def cohort_sgs(tmp_path: Path) -> list[dict]:
     """
-    One SG per input kind, as local placeholder files so a stub run can stage them. CPG1-CPG3 are in PROJECT,
-    CPG4-CPG6 in OTHER.
+    One SG per input kind, as local placeholder files so a stub run can stage them. CPG1-CPG3 and CPG7 are in
+    PROJECT, CPG4-CPG6 in OTHER. CPG5 and CPG7 are already aligned; only CPG5's CRAM analysis has a somalier
+    fingerprint.
     """
     data = tmp_path / 'data'
     cram = touch(data / 'existing' / 'CPG5.cram')
     touch(data / 'existing' / 'CPG5.cram.crai')
+    somalier = touch(data / 'existing' / 'CPG5.cram.somalier')
+    unfingerprinted = touch(data / 'existing' / 'CPG7.cram')
+    touch(data / 'existing' / 'CPG7.cram.crai')
     touch(data / 'old_ref.fasta.fai')
     return [
         sg('CPG1', [fastq_meta(touch(data / f'L{n}_R1.fq.gz'), touch(data / f'L{n}_R2.fq.gz')) for n in (1, 2)]),
@@ -77,6 +90,8 @@ def cohort_sgs(tmp_path: Path) -> list[dict]:
             ],
         ),
         sg('CPG4', [{'reads_type': 'bam', 'reads': {'location': touch(data / 'CPG4.bam')}}], project=OTHER),
-        sg('CPG5', analyses=[{'id': 1, 'output': cram}], project=OTHER),
+        sg('CPG5', analyses=[cram_analysis(1, cram, somalier=somalier)], project=OTHER),
         sg('CPG6', [fastq_meta(touch(data / 'S6_R1.fq.gz'), touch(data / 'S6_R2.fq.gz'))], project=OTHER),
+        # an older CRAM, whose analysis records neither its reference nor a fingerprint
+        sg('CPG7', analyses=[cram_analysis(3, unfingerprinted)]),
     ]

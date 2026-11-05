@@ -7,6 +7,7 @@
 include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
 include { REGISTER_ANALYSIS } from './modules/local/register_analysis'
 include { WRITE_RUN_RECORDS } from './modules/local/write_run_records'
+include { SOMALIER_EXTRACT } from './modules/local/somalier_extract'
 include { ALIGN } from './subworkflows/local/align'
 
 /*
@@ -34,10 +35,10 @@ def runDir() {
     "${datasetRoot(params.dataset)}/alignment_samplesheets/${params.arGuid}"
 }
 
-// each file ALIGN_TO_CRAM and MERGE_TO_CRAM write, by name -> where it goes under the SG's output root.
-// Plain String keys: a GString key would never match the filename publishDir looks up
+// each file ALIGN_TO_CRAM, MERGE_TO_CRAM and SOMALIER_EXTRACT write, by name -> where it goes under the SG's
+// output root. Plain String keys: a GString key would never match the filename publishDir looks up
 def publishPaths(id) {
-    ["cram/${id}.cram", "cram/${id}.cram.crai", "qc/markduplicates_metrics/${id}.markduplicates-metrics"]
+    ["cram/${id}.cram", "cram/${id}.cram.crai", "cram/${id}.cram.somalier", "qc/markduplicates_metrics/${id}.markduplicates-metrics"]
         .collectEntries { rel -> [(rel.tokenize('/').last()): "${typePrefix()}${rel}".toString()] }
 }
 
@@ -57,7 +58,7 @@ def idList(param) {
 }
 
 def validateParams() {
-    def missing = ['dataset', 'sequencing_type', 'arGuid', 'ref_fasta'].findAll { name -> !params[name] }
+    def missing = ['dataset', 'sequencing_type', 'arGuid', 'ref_fasta', 'aligned_ref_fasta', 'somalier_sites'].findAll { name -> !params[name] }
     if (missing) {
         error("Missing required params: ${missing.collect { name -> '--' + name }.join(', ')}")
     }
@@ -74,8 +75,8 @@ def validateParams() {
     if ([params.cohorts, params.sgids, params.samplesheet].count { input -> input } != 1) {
         error('Provide exactly one of --cohorts, --sgids or --samplesheet')
     }
-    if (!(params.align_container && params.cpg_container)) {
-        error('The workflow needs --align_container and --cpg_container')
+    if (!(params.align_container && params.cpg_container && params.somalier_container)) {
+        error('The workflow needs --align_container, --cpg_container and --somalier_container')
     }
     if (!(params.register.toString() in ['true', 'false'])) {
         error("--register must be true or false, got '${params.register}'")
@@ -110,22 +111,22 @@ def claimsFile() {
 }
 
 /*
- * Fail before any alignment if an output this run would publish already exists, in any SG's dataset.
+ * Fail before any alignment or fingerprinting if an output this run would publish already exists, in any SG's
+ * dataset. Already-aligned SGs publish nothing, so they never get here.
  * publishDir's overwrite: false leaves such a file in place silently, and registration would then record a
- * file this run didn't write (ADR 0009).
+ * file this run didn't write. The run only ever registers what it wrote (ADR 0009, ADR 0012).
  * Metamist-built sheets leave out SGs with a registered CRAM, so a clash is most likely an unregistered CRAM.
  * On -resume, outputs claimed by an earlier attempt of this session are expected, and are republished.
  */
 def checkNoExistingOutputs(rows) {
+    def claims = claimsFile()
+    def claimed = claims.exists() ? claims.readLines().toSet() : [] as Set
+
     def outputs = rows
         .collect { meta, _r -> meta }
         .unique { meta -> meta.id }
         .collectMany { meta -> meta.publish.keySet().collect { filename -> destination(meta, filename) } }
-    def claims = claimsFile()
-    def claimed = claims.exists() ? claims.readLines().toSet() : [] as Set
-    def existing = outputs
-        .findAll { uri -> !(uri in claimed) }
-        .findAll { uri -> file(uri).exists() }
+    def existing = outputs.findAll { uri -> existsUnclaimed(uri, claimed) }
     if (existing) {
         fail(
             "${existing.size()} output(s) already exist, and are probably not registered in Metamist. " +
@@ -135,6 +136,11 @@ def checkNoExistingOutputs(rows) {
     claims.parent.mkdirs()
     claims.text = (claimed + outputs).join('\n')
     return rows
+}
+
+// an existing output that no earlier attempt of this session published
+def existsUnclaimed(uri, claimed) {
+    !(uri in claimed) && file(uri).exists()
 }
 
 // error() inside a channel operator reaches the console only as "Unexpected error", so log the reason first
@@ -153,8 +159,9 @@ workflow {
     // likewise `--register false` arrives as the string 'false', which Groovy treats as true
     def register = params.register.toString().toBoolean()
 
-    // the FASTA and everything that sits beside it: its .fai, and the bwa-mem3 index built with the FASTA as prefix.
-    // Staged side by side, so the FASTA's own name is the bwa-mem3 index prefix. A .dict is deliberately left out (RISKS.md)
+    // the FASTA and everything that sits beside it: its .fai, the bwa-mem3 index built with the FASTA as prefix,
+    // and the .alt that makes alignment alt-aware. Staged side by side, so the FASTA's own name is the bwa-mem3
+    // index prefix. The alt-annotated .dict goes too: bwa-mem3 copies its @SQ lines, AH tags and all (ADR 0010)
     def ref_suffixes = ['fai', 'bwt.2bit.64', 'amb', 'ann', 'pac', 'alt']
     def reference = channel.value([file(params.ref_fasta), file(params.ref_fasta_dict), ref_suffixes.collect { ext -> file("${params.ref_fasta}.${ext}") }])
 
@@ -185,15 +192,18 @@ workflow {
             if (!r.dataset) {
                 fail("${r.sg_id}: a row needs dataset, the dataset the SG belongs to")
             }
+            def aligned = r.kind == 'aligned'
             def meta = [
                 id: r.sg_id,
                 kind: r.kind,
                 units: r.n_units.toInteger(),
-                ref: r.reads_ref ?: params.ref_fasta,
+                // an aligned CRAM whose analysis doesn't record its reference predates nf-align (ADR 0006)
+                ref: r.reads_ref ?: (aligned ? params.aligned_ref_fasta : params.ref_fasta),
                 dataset: r.dataset,
                 project: metamistProject(r.dataset),
                 outRoot: datasetRoot(r.dataset),
-                publish: publishPaths(r.sg_id),
+                // an aligned SG's CRAM is already registered, fingerprint or not, so nothing is published
+                publish: aligned ? [:] : publishPaths(r.sg_id),
             ]
             [meta, r]
         }
@@ -204,34 +214,45 @@ workflow {
 
     // hold every row until the whole sheet has been checked, so a clash fails the run before any work starts
     // this scenario covers alignment outputs which exist in GCS but haven't been registered. We don't want to attempt
-    // regenaration/overwriting, but they would appear in the samplesheet based on the metamist-only logic
+    // regenaration/overwriting, or to register files this run didn't write, so they fail the run
     def checked = rows.to_align
         .toList()
         .flatMap { items -> checkNoExistingOutputs(items) }
 
     ALIGN(checked, rows.aligned, reference, shards, params.dupblaster_extra_args)
 
+    // fingerprint each newly aligned CRAM against ref_fasta, which it was written with. Only the FASTA and .fai
+    // are staged, not the bwa-mem3 index
+    def fingerprinted = SOMALIER_EXTRACT(
+        ALIGN.out.cram.map { meta, cram, crai -> [meta + [ref: params.ref_fasta], cram, crai, file(params.ref_fasta), file("${params.ref_fasta}.fai")] },
+        file(params.somalier_sites),
+    )
+
+    // one analysis per SG: the CRAM, with its index and fingerprint as secondary files. A CRAM whose fingerprint
+    // failed isn't registered (ADR 0012)
     def registered = channel.empty()
     if (register) {
         registered = REGISTER_ANALYSIS(
-            ALIGN.out.cram.map { meta, _cram, _crai -> [meta, destination(meta, "${meta.id}.cram")] },
+            fingerprinted.map { meta, _somalier -> [meta, destination(meta, "${meta.id}.cram"), destination(meta, "${meta.id}.cram.somalier")] },
             params.sequencing_type,
             params.arGuid,
-            params.ref_fasta,
             params.register_wait_minutes.toInteger(),
         )
     }
 
-    // with errorStrategy 'ignore' a failed SG doesn't fail the run, so name each one and the step it failed at
-    def failed = checked.map { meta, _r -> [meta.id, meta.dataset, 'expected'] }
+    // with errorStrategy 'ignore' a failed SG doesn't fail the run, so name each one and the first step it didn't
+    // get through: each SG is aligned, fingerprinted and registered
+    // I'm not convinced by this whole mechanic, it's a lot of complexity for something we're able to check in the UI
+    def steps = [aligned: 'align', fingerprinted: 'somalier'] + (register ? [registered: 'register'] : [:])
+    def failed = checked.map { meta, _r -> [meta.id, meta.dataset, 'to_align'] }
         .mix(ALIGN.out.cram.map { meta, _cram, _crai -> [meta.id, meta.dataset, 'aligned'] })
+        .mix(fingerprinted.map { meta, _somalier -> [meta.id, meta.dataset, 'fingerprinted'] })
         .mix(registered.map { meta -> [meta.id, meta.dataset, 'registered'] })
         .groupTuple(by: [0, 1])
-        .map { id, dataset, events ->
-            def failed_at = !('aligned' in events) ? 'align' : (register && !('registered' in events) ? 'register' : null)
-            [sg_id: id, dataset: dataset, failed_at: failed_at]
+        .flatMap { id, dataset, events ->
+            def failed_at = steps.find { event, _step -> !(event in events) }?.value
+            failed_at ? [[sg_id: id, dataset: dataset, failed_at: failed_at]] : []
         }
-        .filter { record -> record.failed_at }
     failed.toList().subscribe { records ->
         if (records) {
             log.warn("${records.size()} SG(s) failed and were skipped (see ${runDir()}/failed.csv): " +

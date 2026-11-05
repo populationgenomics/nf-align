@@ -15,7 +15,7 @@ from conftest import OTHER, PROJECT, touch
 pytestmark = pytest.mark.skipif(shutil.which('nextflow') is None, reason='nextflow not installed')
 
 MAIN_NF = Path(__file__).parents[1] / 'main.nf'
-NEW = {'CPG1', 'CPG2', 'CPG3', 'CPG4', 'CPG6'}  # CPG5 already has a CRAM
+NEW = {'CPG1', 'CPG2', 'CPG3', 'CPG4', 'CPG6'}  # CPG5 and CPG7 already have a CRAM, CPG7 without a fingerprint
 NEW_BY_DATASET = {PROJECT: {'CPG1', 'CPG2', 'CPG3'}, OTHER: {'CPG4', 'CPG6'}}
 DATASET = {sg_id: ds for ds, sg_ids in NEW_BY_DATASET.items() for sg_id in sg_ids}
 
@@ -49,6 +49,7 @@ def run(tmp_path, cohort_sgs):
     refs = tmp_path / 'refs'
     for name in ['ref.fasta', 'ref.fasta.fai', *(f'ref.fasta.{ext}' for ext in ['bwt.2bit.64', 'amb', 'ann', 'pac'])]:
         touch(refs / name)
+    touch(refs / 'sites.vcf.gz')
 
     def _run(
         *args: str,
@@ -72,6 +73,8 @@ def run(tmp_path, cohort_sgs):
                 '--sequencing_type', sequencing_type,
                 '--realignment_shards', '2',
                 *reference,
+                '--somalier_sites', str(refs / 'sites.vcf.gz'),
+                '--aligned_ref_fasta', str(refs / 'masked.fasta'),
                 *args,
             ],
             cwd=tmp_path,
@@ -105,11 +108,13 @@ def test_every_input_kind_is_aligned_published_and_registered(run):
     assert task_names(tasks, 'MERGE_TO_CRAM') == {'CPG1', 'CPG3', 'CPG4'}
     assert task_names(tasks, 'ALIGN_TO_CRAM') == {'CPG2', 'CPG6'}
     assert task_names(tasks, 'SORT_INDEX') == {'CPG4'}  # the unindexed BAM
+    # each new CRAM is fingerprinted, then registered once; the aligned SGs get no tasks, fingerprint or not
+    assert task_names(tasks, 'SOMALIER_EXTRACT') == NEW
     assert task_names(tasks, 'REGISTER_ANALYSIS') == NEW
 
-    # each SG goes to its own dataset
+    # each SG goes to its own dataset, its somalier fingerprint beside the CRAM
     for ds, sg_ids in NEW_BY_DATASET.items():
-        crams = {f'{s}.cram{ext}' for s in sg_ids for ext in ['', '.crai']}
+        crams = {f'{s}.cram{ext}' for s in sg_ids for ext in ['', '.crai', '.somalier']}
         assert {p.name for p in cram_dir(out, ds).iterdir()} == crams
         assert {p.name for p in metrics_dir(out, ds).iterdir()} == {f'{s}.markduplicates-metrics' for s in sg_ids}
 
@@ -129,13 +134,23 @@ def test_every_input_kind_is_aligned_published_and_registered(run):
 def test_registration_uses_the_published_path_and_the_sgs_project(run, tmp_path):
     result, out, tasks = run('--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
+    # one analysis per SG: the CRAM, with its index and fingerprint as secondary files
     for sg_id, ds in [('CPG1', PROJECT), ('CPG4', OTHER)]:
         command = (task_dir(tasks, tmp_path, f'REGISTER_ANALYSIS ({sg_id})') / '.command.out').read_text()
         cram = cram_dir(out, ds) / f'{sg_id}.cram'
-        assert f'--output {cram} ' in command
-        assert f'--secondary index={cram}.crai ' in command
+        assert f'--output {cram} --type cram --secondary index={cram}.crai somalier={cram}.somalier ' in command
+        assert f'--sgs {sg_id} ' in command
         assert f'--project {ds} ' in command
         assert 'ar-guid=local-test' in command
+        assert f'ref_fasta={tmp_path}/refs/ref.fasta' in command
+
+
+def test_new_cram_is_fingerprinted_against_the_alignment_reference(run, tmp_path):
+    # CPG3's input CRAM was written against old_ref.fasta, but its new CRAM against ref_fasta
+    result, _out, tasks = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    staged = task_dir(tasks, tmp_path, 'SOMALIER_EXTRACT (CPG3)') / 'ref'
+    assert {p.name for p in staged.iterdir()} == {'ref.fasta', 'ref.fasta.fai'}
 
 
 def test_test_access_level_registers_in_test_projects(run, tmp_path):
@@ -153,33 +168,40 @@ def test_exomes_are_published_under_exome(run):
     assert result.returncode == 0, result.stdout + result.stderr
     for ds, sg_ids in NEW_BY_DATASET.items():
         assert {p.name for p in cram_dir(out, ds, 'exome').glob('*.cram')} == {f'{s}.cram' for s in sg_ids}
+        assert len(list(cram_dir(out, ds, 'exome').glob('*.somalier'))) == len(sg_ids)
         assert len(list(metrics_dir(out, ds, 'exome').iterdir())) == len(sg_ids)
         assert not cram_dir(out, ds).exists()
 
 
 def test_failed_sgs_are_dropped_and_reported(run, tmp_path):
-    # a stub never fails, so fail one shard of CPG3 and CPG6's registration from config
+    # a stub never fails, so fail from config: one shard of CPG3, CPG2's fingerprint and CPG6's registration
     inject = tmp_path / 'fail.config'
     inject.write_text(
         'process {\n'
         "    withName: 'ALIGN_SHARD' { beforeScript = { meta.id == 'CPG3' && unit == 2 ? 'exit 1' : 'true' } }\n"
         "    withName: 'REGISTER_ANALYSIS' { beforeScript = { meta.id == 'CPG6' ? 'exit 1' : 'true' } }\n"
+        "    withName: 'SOMALIER_EXTRACT' { beforeScript = { meta.id == 'CPG2' ? 'exit 1' : 'true' } }\n"
         '}\n',
     )
     result, out, tasks = run('-c', str(inject), '--register', 'true')
 
-    # ignored failures don't fail the run; they're listed instead
+    # ignored failures don't fail the run; each SG is listed once, at the first step it didn't get through
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'CPG3' not in task_names(tasks, 'MERGE_TO_CRAM')  # never merged from the surviving shard
     assert not (cram_dir(out, PROJECT) / 'CPG3.cram').exists()
     assert (cram_dir(out, OTHER) / 'CPG6.cram').exists()
+    # CPG2's CRAM is published, but without a fingerprint it isn't registered, and the next run clashes on it
+    assert (cram_dir(out, PROJECT) / 'CPG2.cram').exists()
+    assert not (cram_dir(out, PROJECT) / 'CPG2.cram.somalier').exists()
+    assert task_names(tasks, 'REGISTER_ANALYSIS') == NEW - {'CPG2', 'CPG3'}
     failed = read_tsv(run_dir(out) / 'failed.csv', sep=',')
     assert [(r['sg_id'], r['dataset'], r['failed_at']) for r in failed] == [
+        ('CPG2', PROJECT, 'somalier'),
         ('CPG3', PROJECT, 'align'),
         ('CPG6', OTHER, 'register'),
     ]
     assert {r['sg_id'] for r in read_tsv(run_dir(out) / 'crams.csv', sep=',')} == NEW - {'CPG3'}
-    assert '2 SG(s) failed and were skipped' in result.stdout + result.stderr
+    assert '3 SG(s) failed and were skipped' in result.stdout + result.stderr
 
 
 def test_existing_outputs_fail_the_run_before_any_alignment(run):
@@ -192,9 +214,12 @@ def test_existing_outputs_fail_the_run_before_any_alignment(run):
     assert result.returncode != 0
     # log.warn/log.error go to stderr, or to stdout when nextflow detects an AI agent (e.g. CLAUDECODE is set)
     console = result.stdout + result.stderr
-    assert '14 output(s) already exist' in console  # 5 SGs x 3 outputs, less the deleted CRAM
+    # 5 SGs x 4 outputs, less the deleted CRAM: a published but unregistered CRAM is a clash, never registered
+    assert '19 output(s) already exist' in console
     assert f'{cram_dir(out, OTHER)}/CPG4.cram.crai' in console
     assert f'{cram_dir(out, PROJECT)}/CPG1.cram' in console
+    assert f'{cram_dir(out, PROJECT)}/CPG1.cram.somalier' in console
+    assert f'{metrics_dir(out, PROJECT)}/CPG1.markduplicates-metrics' in console
     assert 'CPG9' not in console
     assert not [t for t in tasks if t['status'] == 'COMPLETED']
 
@@ -284,7 +309,7 @@ def test_per_sg_tasks_are_labelled_with_the_sgs_dataset(run, tmp_path):
     inject = tmp_path / 'labels.config'
     inject.write_text(
         'process {\n'
-        "    withName: 'SORT_INDEX|ALIGN_TO_CRAM|ALIGN_SHARD|MERGE_TO_CRAM|REGISTER_ANALYSIS' {\n"
+        "    withName: 'SORT_INDEX|ALIGN_TO_CRAM|ALIGN_SHARD|MERGE_TO_CRAM|SOMALIER_EXTRACT|REGISTER_ANALYSIS' {\n"
         '        beforeScript = { "echo LABEL=${task.resourceLabels.dataset}" }\n'
         '    }\n'
         '}\n',
@@ -292,20 +317,22 @@ def test_per_sg_tasks_are_labelled_with_the_sgs_dataset(run, tmp_path):
     result, _out, tasks = run('-c', str(inject), '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
     labelled = [t for t in tasks if not t['name'].startswith('WRITE_RUN_RECORDS')]
-    assert len(labelled) == 17  # SORT_INDEX 1, ALIGN_SHARD 6, MERGE_TO_CRAM 3, ALIGN_TO_CRAM 2, REGISTER_ANALYSIS 5
+    # SORT_INDEX 1, ALIGN_SHARD 6, MERGE_TO_CRAM 3, ALIGN_TO_CRAM 2, SOMALIER_EXTRACT 5, REGISTER_ANALYSIS 5
+    assert len(labelled) == 22
     for t in labelled:
         sg_id = t['name'].split('(')[1].rstrip(')').split(':')[0]
         # beforeScript's output goes to the task log, not .command.out
         assert f'LABEL={DATASET[sg_id]}' in (task_dir(tasks, tmp_path, t['name']) / '.command.log').read_text()
 
 
-def test_workflow_needs_both_containers(run, tmp_path):
+def test_workflow_needs_every_container(run, tmp_path):
     # the test profile sets placeholder containers, and an empty value can't be passed on the command line
     unset = tmp_path / 'no_cpg_container.config'
     unset.write_text('params.cpg_container = null\n')
     result, _out, tasks = run('-c', str(unset), '--align_container', 'image:1')
     assert result.returncode != 0
-    assert 'The workflow needs --align_container and --cpg_container' in result.stdout + result.stderr
+    message = 'The workflow needs --align_container, --cpg_container and --somalier_container'
+    assert message in result.stdout + result.stderr
     assert not tasks
 
 

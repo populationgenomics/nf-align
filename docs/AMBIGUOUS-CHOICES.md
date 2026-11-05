@@ -37,7 +37,7 @@ Part B was decided during implementation and **has not been explicitly confirmed
    `.json` or `.yaml` for workflow output index files. `WRITE_RUN_RECORDS` could now write TSV, but the
    names `crams.csv` and `failed.csv` are kept so anything that already reads them keeps working. The
    sample sheet itself is still `samplesheet.tsv`.
-3. **`failed.csv` has a `failed_at` column** (`align` or `register`), so a failed registration isn't
+3. **`failed.csv` has a `failed_at` column** (`align`, `somalier` or `register`), so a failed registration isn't
    confused with a failed alignment.
 4. **Registration is retried once, then ignored** (and reported in `failed.csv`).
 5. **`BUILD_SAMPLESHEET` fails the run if no SG is in scope** (for example, every SG is the other
