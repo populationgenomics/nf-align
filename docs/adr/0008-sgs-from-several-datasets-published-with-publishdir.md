@@ -33,4 +33,6 @@ type per run stays.
   project in a test run, or the other way round) fails the sample sheet step.
 - Output paths are worked out once in `main.nf` and carried in each SG's `meta`. `publishDir`, the
   pre-flight check and registration all read them from there.
-- A prepared `--samplesheet` must have a `dataset` column.
+- The `dataset` resource label bills each SG's compute to its own dataset only when the analysis dataset is
+  `seqr`, whose costs the billing aggregator redistributes by label. Under any other analysis dataset,
+  the whole run is billed to that dataset, and the label only tags the cost rows.

@@ -142,11 +142,14 @@ documentation.
 30. **Every dataset is assumed to have a `gs://cpg-<ds>-{main,test}` bucket.** The SG's bucket comes from
     its project name by convention, and isn't looked up. A dataset that doesn't follow the convention
     fails at the pre-flight check or at publishing.
-31. **Per-SG resource labels are verified only locally.** ✅ (Nextflow 26.10.4, local executor) A
-    `resourceLabels` closure is evaluated per task against `meta`, and
+31. **Per-SG resource labels only move cost under `seqr`.** ✅ A `resourceLabels` closure is evaluated
+    per task against `meta` (Nextflow 26.10.4, local executor), and
     `test_per_sg_tasks_are_labelled_with_the_sgs_dataset` checks every per-SG task's label in a stub run.
-    That Google Batch applies those labels to the VM, so the cost is attributed to the SG's dataset,
-    hasn't been checked.
+    Production billing for a run under `seqr` shows Google Batch applies the labels, and each SG's
+    compute appears under its own dataset. Only the seqr GCP project's costs are redistributed by the
+    `dataset` label, though. A run under any other analysis dataset is billed wholly to that dataset,
+    and the label only tags the rows (DESIGN.md §4). Under `seqr`, the gross `seqr` rows and their
+    credits net to zero, so a billing view without the credit rows looks like a double count.
 
 ## Cost
 

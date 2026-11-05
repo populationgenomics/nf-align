@@ -80,7 +80,7 @@ Switches and tuning, all with defaults in `nextflow.config`:
 | `realignment_shards` | 0 | bazam shards per CRAM/BAM input; 0 means 6 for genomes and 1 for exomes |
 | `dupblaster_extra_args` | `''` | appended verbatim to the dupblaster command (see Running) |
 | `somalier_sites` | hg38 sites VCF | where somalier fingerprints each CRAM |
-| `verifybamid_container`, `picard_container`, `{genome,exome}_contam_{ud,bed,mu}`, `genome_coverage_interval_list`, `exome_evaluation_interval_list` | cpg-flow's | CRAM QC's images and references. With `cram_qc` on, the run fails at launch if the images or the sequencing type's references are unset |
+| `verifybamid_container`, `picard_container`, `mosdepth_container`, `{genome,exome}_contam_{ud,bed,mu}`, `genome_coverage_interval_list`, `exome_evaluation_interval_list` | cpg-flow's | CRAM QC's images and references. With `cram_qc` on, the run fails at launch if the images or the sequencing type's references are unset |
 
 There is no `outputDir`: every destination is worked out per SG (see Outputs). The launcher supplies
 `-work-dir` and `google.project`; the config never sets them.
@@ -238,7 +238,7 @@ registration can't drift apart. `main.nf` stays the one place the layout is defi
 | CRAM + index | `[exome/]cram/<sg>.cram`, plus `.crai` |
 | somalier fingerprint | `[exome/]cram/<sg>.cram.somalier` (cpg-flow's `CramPath.somalier_path`) |
 | duplicate metrics | `[exome/]cram_qc/<sg>/<sg>.markduplicates-metrics`, even with `--cram_qc false` |
-| CRAM QC ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)) | `[exome/]cram_qc/<sg>/`: `<sg>.verify-bamid.selfSM`, `<sg>.samtools-stats`, `<sg>.{alignment_summary,base_distribution_by_cycle,insert_size,quality_by_cycle,quality_yield}_metrics`, `<sg>.picard-{wgs,hs}-metrics` |
+| CRAM QC ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)) | `[exome/]cram_qc/<sg>/`: `<sg>.verify-bamid.selfSM`, `<sg>.samtools-stats`, `<sg>.{alignment_summary,base_distribution_by_cycle,insert_size,quality_by_cycle,quality_yield}_metrics`, `<sg>.picard-{wgs,hs}-metrics`, `<sg>.mosdepth.{global.dist,region.dist,summary}.txt`, `<sg>.{regions,quantized}.bed.gz`, and their `.csi`, which are published but not registered |
 
 The run records are the sample sheet, `samplesheet.tsv`, published by `BUILD_SAMPLESHEET` to
 `alignment_samplesheets/<arGuid>/` under the analysis dataset's output root. There is no index of the CRAMs a
@@ -249,8 +249,17 @@ its `ar-guid`, and Seqera lists the tasks. There is no record of failed SGs eith
 Only newly aligned SGs are published, apart from a QC-only SG's QC tools' files
 ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
 
-Each per-SG task's `dataset` resource label is `meta.dataset`, so its cost goes to the SG's dataset.
-`BUILD_SAMPLESHEET` and `PREFLIGHT` are labelled with the analysis dataset.
+Each per-SG task's `dataset` resource label is `meta.dataset`. `BUILD_SAMPLESHEET` and `PREFLIGHT` are
+labelled with the analysis dataset. What the label does to billing depends on the GCP project the run is in
+(the CPG billing aggregator, `cpg-infrastructure/cpg_infra/billing_aggregator/aggregate/`):
+
+- **Analysis dataset `seqr`**: `seqr.py` charges each labelled row in full to `topic=<label>`, and adds a
+  matching credit on `seqr`. Each SG's compute is billed to its own dataset, and the run-level tasks net
+  to zero on `seqr`. A view that leaves out the `-credit` rows shows the same cost under `seqr` and under
+  the SG's dataset. Without the label, the cost would be spread across all seqr datasets by size.
+- **Any other analysis dataset**: `gcp.py` takes `topic` from the GCP project alone, so the whole run is
+  billed to the analysis dataset. The label only fills the `dataset` column of the extended billing view,
+  for breaking the run's cost down by SG dataset.
 
 ### 5. Fingerprint (`SOMALIER_EXTRACT`)
 
@@ -266,8 +275,8 @@ registered before nf-align fingerprinted have no fingerprint, and this pipeline 
 ### 6. CRAM QC (`CRAM_QC`)
 
 When `cram_qc` is true (the default), every newly aligned CRAM is QC'd alongside its fingerprint, as
-cpg-flow's `CramQc*` stages did ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)). There are three
-tasks, one per image, each staging the CRAM with the FASTA, `.fai` and `.dict` of the reference it was
+cpg-flow's `CramQc*` stages did ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)), plus mosdepth
+coverage. There are four tasks, one per image, each staging the CRAM with the FASTA, `.fai` and `.dict` of the reference it was
 written against (`ref_fasta` and `ref_fasta_dict` for a new CRAM):
 
 - `VERIFYBAMID`: VerifyBamID2 against the sequencing type's 1000G contamination resources
@@ -277,8 +286,12 @@ written against (`ref_fasta` and `ref_fasta_dict` for a new CRAM):
   `genome_coverage_interval_list` (genome), or CollectHsMetrics with `exome_evaluation_interval_list` as
   both bait and target (exome). The interval list is passed through BED and back with the `.dict`, so its
   header matches the alignment reference whichever hg38 build it was made against.
+- `MOSDEPTH`: `mosdepth --no-per-base --fast-mode --by 100 --quantize 0:1:5:20:50:`, for both sequencing
+  types: the depth distribution, mean depth in 100 bp windows, and the genome split into depth bands. Its
+  own task, as mosdepth reads the CRAM through its index and can't share Picard's decoded stream.
+  `--fast-mode` ignores CIGARs and mate overlaps: deletions count as covered, and overlapping mates twice.
 
-An SG comes out of `CRAM_QC` only if all three succeeded, so CRAM QC is all or nothing. A QC failure never
+An SG comes out of `CRAM_QC` only if all four succeeded, so CRAM QC is all or nothing. A QC failure never
 touches the CRAM's own registration. All of an SG's metrics, including the duplicate metrics from
 alignment, go in one folder, `[exome/]cram_qc/<sg>/`, rather than cpg-flow's per-tool `qc/<tool>/` folders.
 The file names inside it are cpg-flow's, so MultiQC's filename patterns still match, but path-based
@@ -289,7 +302,7 @@ Already-aligned SGs aren't QC'd unless `--qc_aligned true` is set
 ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)). Then each one whose sample sheet row has an
 empty `cram_qc` is a **QC-only SG**: its registered CRAM goes through `CRAM_QC` against the reference it was
 written with (its row's `reads_ref`, with the `<name>.dict` beside the FASTA), and nothing else
-runs for it. Only the three tools' files are published, and the pre-flight check covers them. A run whose SGs
+runs for it. Only the four tools' files are published, and the pre-flight check covers them. A run whose SGs
 are all aligned does only QC.
 
 ### 7. Registration (`REGISTER_CRAM`, `REGISTER_CRAM_QC`)
@@ -313,13 +326,14 @@ The fingerprint is found at `outputs.secondary_files.somalier.path` on the CRAM 
 
 `REGISTER_CRAM_QC` runs once an SG's CRAM QC is complete *and* its `cram` analysis is registered (by
 `REGISTER_CRAM`, or already, for a QC-only SG), so a `cram_qc` analysis never points at an unregistered CRAM. The CRAM is its primary file again, and every QC
-file, including the duplicate metrics, is a secondary file:
+file except mosdepth's BED indexes, including the duplicate metrics, is a secondary file:
 
 ```
 python3 -m cpg_utils.metamist_registration --project <SG's dataset>[-test] --output <cram> --type cram_qc \
     --secondary verifybamid=<dir>/<sg>.verify-bamid.selfSM samtools_stats=<dir>/<sg>.samtools-stats \
         alignment_summary_metrics=... base_distribution_by_cycle_metrics=... insert_size_metrics=... \
         quality_by_cycle_metrics=... quality_yield_metrics=... picard_{wgs,hs}_metrics=... \
+        mosdepth_{global_dist,region_dist,summary}=... mosdepth_{regions,quantized}=... \
         markduplicates_metrics=<dir>/<sg>.markduplicates-metrics \
     --sgs <sg> --meta sequencing_type=<type> ar-guid=<arGuid>
 ```
@@ -391,6 +405,7 @@ These follow from the decisions above, and are accepted for now:
 | `VERIFYBAMID` | 4 | 12 GB × attempt | 100 / 20 GB | `n2-standard-4`, `n2-highmem-4`, `n2-highmem-8` |
 | `SAMTOOLS_STATS` | 4 | 4 GB × attempt | 100 / 20 GB | `e2-standard-4`, `e2-standard-4`, `e2-standard-8` |
 | `PICARD_METRICS` (two JVMs, 40% heap each) | 4 | 12 GB × attempt | 100 / 20 GB | `n2-standard-4`, `n2-highmem-4`, `n2-highmem-8` |
+| `MOSDEPTH` (3 decompression threads) | 4 | 4 GB × attempt | 100 / 20 GB | `e2-standard-4`, `e2-standard-4`, `e2-standard-8` |
 | `BUILD_SAMPLESHEET`, `REGISTER_CRAM`, `REGISTER_CRAM_QC` | 1 | 4 / 2 GB | default | `e2-standard-2` |
 | `PREFLIGHT` | native `exec:`, in the Nextflow process | | | |
 
@@ -411,7 +426,7 @@ nextflow_schema.json          launch-form schema (main.nf does its own validatio
 conf/base.config              containers, resources, error strategy, per-SG resource labels, publishDir
 subworkflows/local/align/     ALIGN
 subworkflows/local/cram_qc/   CRAM_QC
-modules/local/<process>/      build_samplesheet, preflight, sort_index, align_to_cram, align_shard, merge_to_cram, somalier_extract, verifybamid, samtools_stats, picard_metrics, register_analysis
+modules/local/<process>/      build_samplesheet, preflight, sort_index, align_to_cram, align_shard, merge_to_cram, somalier_extract, verifybamid, samtools_stats, picard_metrics, mosdepth, register_analysis
 bin/build_samplesheet.py      cohorts or SG IDs, from any datasets -> sample sheet (needs only `metamist`)
 bin/align_stream.sh           per-kind input -> bwa-mem3 BAM stream
 bin/dedup_to_cram.sh          dupblaster -> sort -> CRAM 3.0 + metrics
