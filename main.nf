@@ -46,6 +46,7 @@ params {
     // CRAM QC's, needed only with --cram_qc, and the references only for the run's sequencing type
     verifybamid_container: String?
     picard_container: String?
+    mosdepth_container: String?
     genome_contam_ud: String?
     genome_contam_bed: String?
     genome_contam_mu: String?
@@ -82,7 +83,6 @@ def runDir() {
 }
 
 // the files CRAM QC's own tools write for an SG, by their secondary-file key in its cram_qc analysis -> file name
-// (ADR 0014)
 def qcToolFiles(id) {
     def coverage = params.sequencing_type == 'genome' ? 'wgs' : 'hs'
     def suffixes = [
@@ -94,6 +94,11 @@ def qcToolFiles(id) {
         quality_by_cycle_metrics: 'quality_by_cycle_metrics',
         quality_yield_metrics: 'quality_yield_metrics',
         ("picard_${coverage}_metrics".toString()): "picard-${coverage}-metrics",
+        mosdepth_global_dist: 'mosdepth.global.dist.txt',
+        mosdepth_region_dist: 'mosdepth.region.dist.txt',
+        mosdepth_summary: 'mosdepth.summary.txt',
+        mosdepth_regions: 'regions.bed.gz',
+        mosdepth_quantized: 'quantized.bed.gz',
     ]
     suffixes.collectEntries { key, suffix -> [(key): "${id}.${suffix}".toString()] }
 }
@@ -111,13 +116,21 @@ def qcFiles(meta) {
     names.collectEntries { key, name -> [(key): "${meta.qcDir}/${name}".toString()] }
 }
 
-// every file this run publishes for an SG, which the pre-flight check makes sure don't exist yet. An aligned SG's
-// CRAM is already registered, so at most its QC is published
+// the QC files this run publishes for an SG but doesn't register (with --cram_qc): the tabix indexes of mosdepth's
+// BEDs, which only serve queries of the BEDs registered beside them
+def qcIndexFiles(meta) {
+    def names = params.cram_qc ? ['regions', 'quantized'].collect { bed -> "${meta.id}.${bed}.bed.gz.csi".toString() } : []
+    names.collectEntries { name -> [(name): "${meta.qcDir}/${name}".toString()] }
+}
+
+// every file this run publishes for an SG, registered or not, which the pre-flight check makes sure don't exist yet.
+// An aligned SG's CRAM is already registered, so at most its QC is published
 def outputs(meta) {
+    def qc = qcFiles(meta) + qcIndexFiles(meta)
     if (meta.kind != 'aligned') {
-        return cramFiles(meta) + qcFiles(meta)
+        return cramFiles(meta) + qc
     }
-    meta.qcOnly ? qcFiles(meta) : [:]
+    meta.qcOnly ? qc : [:]
 }
 
 // a QC-only SG's duplicate metrics, if the run that aligned it published them in the SG's dataset: nf-align's
@@ -178,7 +191,7 @@ def validateParams() {
     if (params.qc_aligned && !params.cram_qc) {
         error('--qc_aligned needs CRAM QC, so it can\'t be combined with --cram_qc false')
     }
-    def qc_params = ['verifybamid_container', 'picard_container'] + cramQcRefParams().values()
+    def qc_params = ['verifybamid_container', 'picard_container', 'mosdepth_container'] + cramQcRefParams().values()
     def qc_missing = params.cram_qc ? qc_params.findAll { name -> !params[name] } : []
     if (qc_missing) {
         error("CRAM QC needs ${qc_missing.collect { name -> '--' + name }.join(', ')} (or --cram_qc false)")

@@ -42,6 +42,7 @@ def qc_files(sg_id: str, coverage: str = 'wgs') -> dict[str, str]:
         'samtools_stats': f'{sg_id}.samtools-stats',
         **{m: f'{sg_id}.{m}' for m in METRICS},
         f'picard_{coverage}_metrics': f'{sg_id}.picard-{coverage}-metrics',
+        **{key: f'{sg_id}.{suffix}' for key, suffix in MOSDEPTH.items()},
         'markduplicates_metrics': f'{sg_id}.markduplicates-metrics',
     }
 
@@ -53,7 +54,21 @@ METRICS = [
     'quality_by_cycle_metrics',
     'quality_yield_metrics',
 ]
-QC_PROCESSES = ['VERIFYBAMID', 'SAMTOOLS_STATS', 'PICARD_METRICS']
+MOSDEPTH = {
+    'mosdepth_global_dist': 'mosdepth.global.dist.txt',
+    'mosdepth_region_dist': 'mosdepth.region.dist.txt',
+    'mosdepth_summary': 'mosdepth.summary.txt',
+    'mosdepth_regions': 'regions.bed.gz',
+    'mosdepth_quantized': 'quantized.bed.gz',
+}
+# published beside mosdepth's BEDs, but not registered
+MOSDEPTH_INDEXES = ['regions.bed.gz.csi', 'quantized.bed.gz.csi']
+QC_PROCESSES = ['VERIFYBAMID', 'SAMTOOLS_STATS', 'PICARD_METRICS', 'MOSDEPTH']
+
+
+def published(sg_id: str, files: dict[str, str]) -> set[str]:
+    """The names in an SG's QC folder: its registered QC files, and mosdepth's unregistered BED indexes."""
+    return set(files.values()) | {f'{sg_id}.{index}' for index in MOSDEPTH_INDEXES}
 
 
 def run_dir(out: Path, ar_guid: str = 'local-test') -> Path:
@@ -164,7 +179,7 @@ def test_every_input_kind_is_aligned_published_and_registered(run, tmp_path):
         assert {p.name for p in cram_dir(out, ds).iterdir()} == crams
         assert {p.name for p in (out / ds / 'cram_qc').iterdir()} == sg_ids
         for sg_id in sg_ids:
-            assert {p.name for p in qc_dir(out, ds, sg_id).iterdir()} == set(qc_files(sg_id).values())
+            assert {p.name for p in qc_dir(out, ds, sg_id).iterdir()} == published(sg_id, qc_files(sg_id))
     assert not (out / PROJECT / 'qc').exists()
 
     # the run records, just the sample sheet, go to the analysis dataset only
@@ -248,7 +263,7 @@ def test_aligned_sgs_without_cram_qc_are_qcd_without_realigning(run, tmp_path):
         assert {p.name for p in staged.iterdir()} == {'masked.fasta', 'masked.fasta.fai', 'masked.dict'}
 
     # only its QC tools' files are published; its CRAM is the registered one, and there are no duplicate metrics
-    assert {p.name for p in qc_dir(out, PROJECT, QC_ONLY).iterdir()} == set(qc_tool_files(QC_ONLY).values())
+    assert {p.name for p in qc_dir(out, PROJECT, QC_ONLY).iterdir()} == published(QC_ONLY, qc_tool_files(QC_ONLY))
     assert not (cram_dir(out, PROJECT) / f'{QC_ONLY}.cram').exists()
     assert not (out / OTHER / 'cram_qc' / 'CPG5').exists()
     command = (task_dir(tasks, tmp_path, f'REGISTER_CRAM_QC ({QC_ONLY})') / '.command.out').read_text()
@@ -330,7 +345,7 @@ def test_exomes_are_published_under_exome(run):
         assert len(list(cram_dir(out, ds, 'exome').glob('*.somalier'))) == len(sg_ids)
         for sg_id in sg_ids:
             files = {p.name for p in qc_dir(out, ds, sg_id, 'exome').iterdir()}
-            assert files == set(qc_files(sg_id, coverage='hs').values())
+            assert files == published(sg_id, qc_files(sg_id, coverage='hs'))
         assert not cram_dir(out, ds).exists()
         assert not (out / ds / 'cram_qc').exists()
 
@@ -397,8 +412,9 @@ def test_existing_outputs_fail_the_run_before_any_alignment(run):
     assert result.returncode != 0
     # log.warn/log.error go to stderr, or to stdout when nextflow detects an AI agent (e.g. CLAUDECODE is set)
     console = result.stdout + result.stderr
-    # 5 SGs x 12 outputs, less the deleted CRAM: a published but unregistered CRAM is a clash, never registered
-    assert '59 output(s) already exist' in console
+    # 5 SGs x 19 outputs (2 of them unregistered BED indexes), less the deleted CRAM: a published but unregistered
+    # CRAM is a clash, never registered
+    assert '94 output(s) already exist' in console
     assert f'{cram_dir(out, OTHER)}/CPG4.cram.crai' in console
     assert f'{cram_dir(out, PROJECT)}/CPG1.cram' in console
     assert f'{cram_dir(out, PROJECT)}/CPG1.cram.somalier' in console
@@ -510,7 +526,7 @@ def test_per_sg_tasks_are_labelled_with_the_sgs_dataset(run, tmp_path):
     inject.write_text(
         'process {\n'
         "    withName: 'SORT_INDEX|ALIGN_TO_CRAM|ALIGN_SHARD|MERGE_TO_CRAM|SOMALIER_EXTRACT|VERIFYBAMID|SAMTOOLS_STATS|"
-        "PICARD_METRICS|REGISTER_CRAM|REGISTER_CRAM_QC' {\n"
+        "PICARD_METRICS|MOSDEPTH|REGISTER_CRAM|REGISTER_CRAM_QC' {\n"
         '        beforeScript = { "echo LABEL=${task.resourceLabels.dataset}" }\n'
         '    }\n'
         '}\n',
@@ -518,9 +534,9 @@ def test_per_sg_tasks_are_labelled_with_the_sgs_dataset(run, tmp_path):
     result, _out, tasks = run('-c', str(inject), '--register', 'true')
     assert result.returncode == 0, result.stdout + result.stderr
     labelled = [t for t in tasks if t['name'] not in {'BUILD_SAMPLESHEET (standard)', 'PREFLIGHT'}]
-    # SORT_INDEX 1, ALIGN_SHARD 6, MERGE_TO_CRAM 3, ALIGN_TO_CRAM 2, then 5 each of SOMALIER_EXTRACT, the three
+    # SORT_INDEX 1, ALIGN_SHARD 6, MERGE_TO_CRAM 3, ALIGN_TO_CRAM 2, then 5 each of SOMALIER_EXTRACT, the four
     # QC processes, REGISTER_CRAM and REGISTER_CRAM_QC
-    assert len(labelled) == 42
+    assert len(labelled) == 47
     for t in labelled:
         sg_id = t['name'].split('(')[1].rstrip(')').split(':')[0]
         # beforeScript's output goes to the task log, not .command.out

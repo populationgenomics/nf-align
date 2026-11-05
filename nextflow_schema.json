@@ -117,6 +117,10 @@
                 "picard_container": {
                     "type": "string",
                     "description": "Image with picard, for CRAM QC."
+                },
+                "mosdepth_container": {
+                    "type": "string",
+                    "description": "Image with mosdepth, for CRAM QC."
                 }
             }
         },
@@ -127,7 +131,7 @@
                 "cram_qc": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Run VerifyBamID, samtools stats and Picard metrics on each newly aligned CRAM, publish them with the duplicate metrics to [exome/]cram_qc/<sg>/, and register them as one Metamist 'cram_qc' analysis. The duplicate metrics are published either way."
+                    "description": "Run VerifyBamID, samtools stats, Picard metrics and mosdepth on each newly aligned CRAM, publish them with the duplicate metrics to [exome/]cram_qc/<sg>/, and register them as one Metamist 'cram_qc' analysis. The duplicate metrics are published either way."
                 },
                 "qc_aligned": {
                     "type": "boolean",
