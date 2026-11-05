@@ -1,7 +1,8 @@
 # nf-align: design brief
 
-Aligns the short-read sequencing groups of a set of Metamist cohorts, or a list of sequencing groups. The output for each is a
-deduplicated, coordinate-sorted CRAM. It's a Nextflow (≥ 25.10, strict syntax) pipeline that runs on Google
+Aligns the short-read sequencing groups of a set of Metamist cohorts, or a list of sequencing groups,
+which can come from several datasets. The output for each is a deduplicated, coordinate-sorted CRAM,
+published to and registered in the SG's own dataset. It's a Nextflow (≥ 25.10, strict syntax) pipeline that runs on Google
 Batch against data in GCS, and it can be tested offline with stub runs.
 
 The pipeline adapts the alignment half of the Nextflow port in `cpg-flow-align-genotype/nextflow/`.
@@ -16,65 +17,86 @@ The full design conversation is in [design-session-transcript.md](design-session
 
 ## Scope of a run
 
-One run covers **one dataset and one sequencing type** ([ADR 0001](adr/0001-one-dataset-one-sequencing-type-per-run.md)).
+One run is launched under one **analysis dataset** and covers **one sequencing type**. Its SGs can come
+from any number of datasets. Each SG is published to its own dataset's bucket and registered in its own
+dataset's Metamist project
+([ADR 0008](adr/0008-sgs-from-several-datasets-published-with-publishdir.md)).
+
+An SG's dataset is its sample's Metamist project, with any `-test` removed. The cohort it came through
+doesn't matter: a cohort in `alpha` that holds an SG from `beta` sends that SG's CRAM to `beta`'s bucket.
 
 | param | meaning |
 |---|---|
-| `dataset` | Metamist project name, without the `-test` suffix |
+| `dataset` | the analysis dataset (no `-test` suffix): the run is launched under it, it pays for the run, and it holds the run records. Its service account must be able to see every SG's dataset and write to their buckets and Metamist projects |
 | `sequencing_type` | `genome` or `exome` |
-| `accessLevel` | `full` / `standard` (equivalent), or `test`. Selects the Metamist project (`<dataset>` or `<dataset>-test`) and the default bucket (`gs://cpg-<dataset>-main` or `-test`) |
+| `accessLevel` | `full` / `standard` (equivalent), or `test`. Applies to the whole run: every SG's Metamist project must be `<ds>` (full) or `<ds>-test` (test), and its bucket is `gs://cpg-<ds>-main` or `-test` |
 | `arGuid` | the analysis-runner GUID, used in resource labels, the per-run record directory and the registered analyses. Mandatory |
 | `cohorts` **or** `sgids` **or** `samplesheet` | exactly one: Metamist cohort IDs, Metamist SG IDs (queried directly), or a prepared sheet that skips the Metamist step |
-| `ref_fasta` | the alignment reference. Its `.fai` and bwa-mem3 index (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac}`) must sit beside it ([ADR 0006](adr/0006-dragen-masked-reference-alt-unaware.md)) |
-| `align_container`, `cpg_container` | null until the images are built; the `gcb` profile refuses to run without them |
+| `output_root` | null by default, so each dataset's outputs go to its bucket. If set (the `test` profile sets `results`), they go to `<output_root>/<ds>/` instead, with the same layout below that |
+| `ref_fasta` | the alignment reference. Its `.fai` and bwa-mem3 index (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac}`) must sit beside it ([ADR 0010](adr/0010-gatk-unmasked-reference-alt-unaware.md)) |
+| `align_container`, `cpg_container` | the images, with defaults in `nextflow.config`. The run fails at launch if either is unset, in every profile |
 
-`outputDir` defaults to the dataset bucket. The launcher supplies `-work-dir` and `google.project`;
-the config never sets them.
+There is no `outputDir`: every destination is worked out per SG (see Outputs). The launcher supplies
+`-work-dir` and `google.project`; the config never sets them.
 
 ## Flow
 
 ```
---cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐          (or --samplesheet)
-                               ▼
-                         sample sheet ─ parse ─┬─ aligned ───────────────────────────────▶ (all_crams, for genotyping)
-                                               └─ to align ─ pre-flight ─ ALIGN ─┬─ publish CRAM, .crai, metrics
-                                                                                 └─ REGISTER_ANALYSIS (per SG)
-                                                                    failed-SG report ◀─┘
+run-records check ─ --cohorts | --sgids ─ BUILD_SAMPLESHEET ─┐   (or --samplesheet)
+                                                             ▼
+          sample sheet ─ parse, per-SG destinations into meta ─┬─ aligned ──────────────────────▶ (all_crams, for genotyping)
+                                                               └─ to align ─ pre-flight ─ ALIGN ─┬─ publishDir: CRAM, .crai, metrics → SG's dataset bucket
+                                                                                                 └─ REGISTER_ANALYSIS (per SG, SG's dataset)
+                                    WRITE_RUN_RECORDS (crams.csv, failed.csv → analysis dataset bucket) ◀─┘
 ```
 
 ### 1. Sample sheet (`BUILD_SAMPLESHEET`, `bin/build_samplesheet.py`)
 
-- One GraphQL query, scoped to `project(name: <dataset>[-test])`. It fetches cohort status and the
-  cohorts' SGs (`--cohorts`), or the named SGs directly (`--sgids`), with assay meta and completed, active
-  `cram` analyses.
-- Cohorts that are missing from the project, inactive or empty fail the run. So does an SG from another
-  project. Every offender is reported in one error.
+- One GraphQL query, using the top-level `cohorts(id:)` or `sequencingGroups(id:)` lookup, so it isn't
+  limited to one project. It fetches cohort status and the cohorts' SGs (`--cohorts`), or the named SGs
+  directly (`--sgids`), with each SG's project, assay meta and completed, active `cram` analyses. The
+  script takes `--access-level`, not a project.
+- Cohorts that are missing (or not visible to the run's credentials), inactive or empty fail the run. So
+  does an SG whose project doesn't match the access level: a production project in a test run, or a
+  `-test` project in a full run. Every offender is reported in one error.
 - `--cohorts`: SGs are de-duplicated across cohorts. SGs that aren't short-read, or aren't
   `sequencing_type`, are skipped with a warning.
-- `--sgids`: each SG was asked for by name, so one that's missing from the project, or isn't short-read
+- `--sgids`: each SG was asked for by name, so one that's missing (or not visible), or isn't short-read
   `sequencing_type`, fails the run instead of being skipped.
 - Read locations are used **exactly as Metamist stores them**.
 - Each SG gets one row per alignment unit, with a `kind` (glossary): `fastq` and `fastq_ora` (one row
   per lane), `cram` or `bam` (one row), or `aligned` (it already has a CRAM analysis; one row pointing at
   that CRAM).
+- Each row records the SG's `dataset`: its project, with any `-test` removed.
 - A run with no in-scope SG fails.
-- The sheet is published to `alignment_samplesheets/<arGuid>/samplesheet.tsv`. A `--samplesheet` input
-  is not republished.
+- The sheet is published to `alignment_samplesheets/<arGuid>/samplesheet.tsv` in the analysis dataset
+  bucket. A `--samplesheet` input is not republished, and must have a `dataset` column.
 
-Columns: `sg_id, kind, n_units, unit, r1, r2, reads, reads_index, reads_ref`. For a CRAM, `reads_ref`
+Columns: `sg_id, dataset, kind, n_units, unit, r1, r2, reads, reads_index, reads_ref`. For a CRAM, `reads_ref`
 is the reference it was written against, and is required: a CRAM is never decoded with `ref_fasta`. For ORA,
 it's the ORA reference tarball.
 
 ### 2. Pre-flight
 
-Before anything is aligned, every CRAM, `.crai` and metrics path that the run would publish is checked
-under `outputDir`. If any exist, the run fails and lists them all
-([ADR 0002](adr/0002-preflight-check-instead-of-overwrite-false.md)). `aligned` rows are not checked:
+The pipeline never overwrites a file ([ADR 0009](adr/0009-never-overwrite-preflight-and-publishdir-no-overwrite.md)).
+`publishDir` uses `overwrite: false`, which skips an existing target silently, so clashes are caught
+up front:
+
+- **Run records**: before the sample sheet is built, the run fails if
+  `alignment_samplesheets/<arGuid>/` in the analysis dataset bucket already holds a `samplesheet.tsv`,
+  `crams.csv` or `failed.csv`. This guards against an `arGuid` reused by hand while testing. It's skipped
+  on `-resume`.
+- **Outputs**: before anything is aligned, every CRAM, `.crai` and metrics URI that the run would
+  publish is checked in its SG's dataset bucket. If any exist, the run fails and lists them all. `aligned` rows are not checked:
 for those, an existing CRAM is the expected state.
 
 A run that passes the check records the outputs it claims in `<workDir>/nf-align-claims/<sessionId>.txt`.
 `-resume` keeps the session ID, so a resumed run lets those outputs exist and republishes them from the
-cached tasks. Anything else that already exists still fails the run.
+cached tasks (or, where they're already there, skips them). Anything else that already exists still
+fails the run.
+
+Two runs launched close together for the same SG can both pass the check. That gap is accepted
+(ADR 0009).
 
 ### 3. ALIGN subworkflow
 
@@ -106,25 +128,48 @@ cached tasks. Anything else that already exists still fails the run.
 
 ### 4. Outputs
 
-Workflow outputs, with `mode 'copy'`. Paths come from three functions in `main.nf`, which are the
-single source of truth for both publishing and registration:
+Everything is published with `publishDir`, `mode: 'copy'` and `overwrite: false`. There is no
+`output {}` block: it can only publish under a single `outputDir`
+([clarification](clarifications/workflow-outputs-single-bucket.md)).
 
-| target | path (`exome/` prefix for exomes) |
+When `main.nf` parses a sample sheet row, it works out the SG's destinations and puts them in `meta`
+next to the rest of its inputs:
+
+- `dataset`, and its Metamist project (`<ds>` or `<ds>-test`)
+- its output root: `gs://cpg-<ds>-{main|test}`, or `<output_root>/<ds>`
+- the relative paths of its CRAM, `.crai` and metrics
+
+The `publishDir` settings in config only apply these values, and the pre-flight check and registration
+read the same `meta`, so publishing and registration can't drift apart. `main.nf` stays the one place the
+layout is defined:
+
+| target | path under the SG's output root (`exome/` prefix for exomes) |
 |---|---|
-| CRAM + index | `cramPath(meta)` = `[exome/]cram/<sg>.cram`, plus `.crai` |
-| duplicate metrics | `metricsPath(meta)` = `[exome/]qc/markduplicates_metrics/<sg>.markduplicates-metrics` |
-| per-run records | `runPath(name)` = `alignment_samplesheets/<arGuid>/{samplesheet.tsv, crams.csv, failed.csv}` |
+| CRAM + index | `[exome/]cram/<sg>.cram`, plus `.crai` |
+| duplicate metrics | `[exome/]qc/markduplicates_metrics/<sg>.markduplicates-metrics` |
+
+Run records go under the analysis dataset's output root, at
+`alignment_samplesheets/<arGuid>/`:
+
+| file | written by |
+|---|---|
+| `samplesheet.tsv` | `BUILD_SAMPLESHEET` |
+| `crams.csv` (`sg_id, dataset, cram, crai`, the published URIs) | `WRITE_RUN_RECORDS`, a native (`exec:`) process that gets the collected records, sorted by SG |
+| `failed.csv` (`sg_id, dataset, failed_at`) | `WRITE_RUN_RECORDS` |
 
 Only newly aligned SGs are published.
 
+Each per-SG task's `dataset` resource label is `meta.dataset`, so its cost goes to the SG's dataset.
+`BUILD_SAMPLESHEET` and `WRITE_RUN_RECORDS` are labelled with the analysis dataset.
+
 ### 5. Registration (`REGISTER_ANALYSIS`)
 
-When `register` is true, this runs once per new CRAM. It gets `uriOf(outputDir.resolve(cramPath(meta)))`,
-and polls for up to `register_wait_minutes` until the CRAM and `.crai` exist, because publishing is
+When `register` is true, this runs once per new CRAM, in the SG's own Metamist project. It gets the
+CRAM URI from `meta`, and polls for up to `register_wait_minutes` until the CRAM and `.crai` exist, because publishing is
 asynchronous ([ADR 0005](adr/0005-registration-as-a-polling-process.md)). It then runs:
 
 ```
-python3 -m cpg_utils.metamist_registration --project <dataset>[-test] --output <cram> --type cram \
+python3 -m cpg_utils.metamist_registration --project <SG's dataset>[-test] --output <cram> --type cram \
     --secondary index=<cram>.crai --sgs <sg> --meta sequencing_type=<type> ar-guid=<arGuid>
 ```
 
@@ -137,29 +182,39 @@ Metrics are not registered.
   ([ADR 0007](adr/0007-ignore-failed-sgs-and-report.md)).
 - **Registration** is retried once and then ignored.
 - **Spot preemption** is retried by `google.batch.maxSpotAttempts = 3`.
-- **`BUILD_SAMPLESHEET`** and the pre-flight check fail the whole run.
+- **`BUILD_SAMPLESHEET`**, **`WRITE_RUN_RECORDS`**, the run-records check and the pre-flight check fail the
+  whole run.
 - **Reporting:** dropped SGs are written to `alignment_samplesheets/<arGuid>/failed.csv` with the step
   they failed at (`align` or `register`), and logged as a warning. **The run still exits 0.**
 
 ## Resources (`conf/base.config`)
 
-| process | CPUs | memory | disk (genome / exome) | machines |
+| process | CPUs | memory | disk (genome / exome) | machine type, by attempt |
 |---|---|---|---|---|
-| `ALIGN_TO_CRAM`, `ALIGN_SHARD` | 16 | 48 GB × attempt | 400 / 100 GB | `n2-*,n2d-*,c2d-*,c3d-*` (AVX2) |
-| `MERGE_TO_CRAM` | 8 | 24 GB × attempt | 400 / 100 GB | any |
-| `SORT_INDEX` | 8 | 32 GB × attempt | 550 / 250 GB | any |
-| `BUILD_SAMPLESHEET`, `REGISTER_ANALYSIS` | 1 | 4 / 2 GB | default | any |
+| `ALIGN_TO_CRAM`, `ALIGN_SHARD` | 16 | 48 GB × attempt | 400 / 100 GB | `n2-standard-16`, `n2-highmem-16`, `n2-highmem-32` |
+| `MERGE_TO_CRAM` | 8 | 24 GB × attempt | 400 / 100 GB | `n2-standard-8`, `n2-highmem-8`, `n2-highmem-16` |
+| `SORT_INDEX` | 8 | 32 GB × attempt | 550 / 250 GB | `n2-highmem-8`, `n2-highmem-16`, `n2-highmem-16` |
+| `BUILD_SAMPLESHEET`, `REGISTER_ANALYSIS` | 1 | 4 / 2 GB | default | `e2-standard-2` |
+| `WRITE_RUN_RECORDS` | native `exec:`, in the Nextflow process | | | |
+
+**Every process names one exact `machineType`**, chosen by `task.attempt`, so an OOM retry lands on a
+bigger VM. Don't replace these with a list of types or a wildcard (`n2-*`). With
+`NXF_CLOUDINFO_ENABLED=false`, Nextflow records a task's machine type in the trace only when it was given
+an exact type. Seqera's cost estimates come from that record, so with a list or wildcard Google Batch
+still picks a VM, but the type isn't recorded and the task gets no cost estimate ([RISKS.md](RISKS.md)).
+Each type leaves memory headroom over the request, because a request equal to the VM's memory may not
+fit. The align processes use N2 because bwa-mem3 needs AVX2.
 
 ## Files
 
 ```
-main.nf                       params validation, sample sheet, pre-flight, ALIGN, registration, failed-SG report, outputs
-nextflow.config               params, outputDir, workflow.output settings, profiles (gcb, docker, test)
+main.nf                       params validation, run-records check, sample sheet, per-SG destinations, pre-flight, ALIGN, registration, run records
+nextflow.config               params, profiles (standard: Google Batch, docker, test)
 nextflow_schema.json          launch-form schema (main.nf does its own validation)
-conf/base.config              containers, resources, error strategy, resource labels
+conf/base.config              containers, resources, error strategy, per-SG resource labels, publishDir
 subworkflows/local/align/     ALIGN
-modules/local/<process>/      build_samplesheet, sort_index, align_to_cram, align_shard, merge_to_cram, register_analysis
-bin/build_samplesheet.py      cohorts or SG IDs -> sample sheet (needs only `metamist`)
+modules/local/<process>/      build_samplesheet, sort_index, align_to_cram, align_shard, merge_to_cram, register_analysis, write_run_records
+bin/build_samplesheet.py      cohorts or SG IDs, from any datasets -> sample sheet (needs only `metamist`)
 bin/align_stream.sh           per-kind input -> bwa-mem3 BAM stream
 bin/dedup_to_cram.sh          dupblaster -> sort -> CRAM 3.0 + metrics
 bin/threads.sh                CPU split between the tools in a pipe
@@ -172,7 +227,7 @@ test/                         pytest: sample sheet unit tests, stub runs of main
 ```bash
 # production (the launcher adds -work-dir and google.project)
 nextflow run main.nf \
-    --dataset <ds> --sequencing_type genome --arGuid <guid> --cohorts COH1,COH2 \
+    --dataset <analysis ds> --sequencing_type genome --arGuid <guid> --cohorts COH1,COH2 \
     --align_container <image> --cpg_container <image>
   
 # or realistically... 
@@ -195,19 +250,19 @@ verbatim to the dupblaster command, so quote it as you would for bash:
 
 ## Status and next steps
 
-**Done:** everything above. `nextflow lint` is clean, and 24 tests pass, covering every input kind,
-exome layout, registration paths, injected failures, the pre-flight clash, -resume, cohorts and SG ID modes and
+**Done:** the multi-dataset design described above (ADR 0008, ADR 0009), implemented from
+[PLAN.md](PLAN.md): `build_samplesheet.py` with `--access-level`, top-level queries and a `dataset` column;
+per-SG destinations in `meta`; `publishDir` in place of the `output {}` block; `WRITE_RUN_RECORDS`; the
+run-records check; per-SG resource labels; per-SG registration projects. `nextflow lint` is clean, and 40
+tests pass. The stub runs span two datasets and cover every input kind, the exome layout, registration
+paths and projects (including `accessLevel test`), injected failures, the run-records and pre-flight
+clashes, -resume, cohorts and SG ID modes, a sheet row without a dataset, per-SG resource labels and
 parameter validation.
 
 **Not done yet:**
-1. **Build the images.** `align_container` needs bazam, bwa-mem3, dupblaster, samtools and orad;
-   `cpg_container` needs metamist and cpg_utils.
-2. **Build the bwa-mem3 index** for `Homo_sapiens_assembly38_masked.fasta`. That needs about 76 GB of RAM
-   ([RISKS.md](RISKS.md)). Write it next to the FASTA (`bwa-mem3 index <fasta>`), then set the container
-   defaults in `nextflow.config`.
-3. **A real run on a small test dataset.** Only stubs have run so far, so the process scripts, images,
+1. **A real run on a small test dataset.** Only stubs have run so far, so the process scripts, images,
    resources, Metamist access from Batch and registration are all untested.
-4. **Tiny real-data fixtures** (a small contig with its index, and a few thousand pairs as FQ/BAM/CRAM)
+2. **Tiny real-data fixtures** (a small contig with its index, and a few thousand pairs as FQ/BAM/CRAM)
    for a local docker run.
-5. **Genotyping:** consume `ALIGN.out.all_crams`, and bring back the "a `gvcf` analysis means the SG is
+3. **Genotyping:** consume `ALIGN.out.all_crams`, and bring back the "a `gvcf` analysis means the SG is
    done" rule in the sample sheet.

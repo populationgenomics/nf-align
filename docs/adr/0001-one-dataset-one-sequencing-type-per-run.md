@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0008
+---
+
 # One dataset and one sequencing type per run
 
 A run takes `params.dataset` and `params.sequencing_type`. Its Metamist query is scoped to that dataset's

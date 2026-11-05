@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0010
+---
+
 # Align to the DRAGEN-masked hg38 FASTA, without alt awareness
 
 bwa-mem3 aligns to `Homo_sapiens_assembly38_masked.fasta`, the reference the existing CPG CRAMs were made
