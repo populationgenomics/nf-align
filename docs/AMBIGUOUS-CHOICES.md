@@ -6,32 +6,34 @@ Part B was decided during implementation and **has not been explicitly confirmed
 
 ## A. Agreed during design, but could reasonably flip
 
-| choice | the alternative | why this way |
-|---|---|---|
-| Hash shards, not region shards ([ADR 0003](adr/0003-read-name-hash-shards-not-regions.md)) | region shards, as the original brief said ("roughly by regions") | keeps mates together and covers unmapped reads |
-| Failed SGs are dropped and the run exits 0 ([ADR 0007](adr/0007-ignore-failed-sgs-and-report.md)) | `finish` / `terminate` | a single bad input shouldn't cost a cohort run |
-| Already-aligned SGs stay in the sheet as `aligned` | leave them out until genotyping exists | genotyping is next, and they add no tasks |
-| Single-unit fast path (`ALIGN_TO_CRAM`) kept separate from shard + merge | always shard + merge, even for 1 unit | skips a name-sort and a BAM round trip |
-| One read group per SG (`ID=SM=<sg>`, `PL:ILLUMINA`) | one read group per lane (`<sg>.<unit>`) | one library per SG for dupblaster and downstream tools; lane information is lost |
-| dupblaster sequencing-duplicate detection left on | off by default | richer metrics; it fails loudly on odd read names, with an override available |
-| dupblaster's clamp exit (code 1) treated as failure | parse stderr and accept it | shouldn't happen with short reads; parsing stderr is fragile |
-| QC metrics are registered as one `cram_qc` analysis per CRAM, with the CRAM as the primary file ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)) | secondary files on the `cram` analysis; or the existing `qc` type | QC can't hold up the CRAM, and `qc` already means dataset-level MultiQC reports |
-| All of an SG's QC files go in one `[exome/]cram_qc/<sg>/` folder | cpg-flow's per-tool `qc/<tool>/` folders | one CRAM's QC is in one place; nothing binds nf-align to the old paths yet |
-| CRAM QC is all or nothing, and registered only after the CRAM | register whatever succeeded, as soon as it's ready | consumers can rely on the set of files, and a `cram_qc` analysis never points at an unregistered CRAM |
-| Three QC processes, one per image | one per cpg-flow stage (four); one combined task | stages the CRAM three times, not four, without a custom image |
-| Already-aligned SGs without CRAM QC are QC'd only with `--qc_aligned` ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)) | always gapfill; never | cpg-flow's CRAMs have no `cram_qc` analysis, so always gapfilling would QC every one of them in any cohort run |
-| Interval lists are re-headed through BED with the alignment `.dict` | unmasked-header copies of the lists | the same regions as cpg-flow, so metrics stay comparable |
-| `--cram_qc false` still publishes the duplicate metrics to `cram_qc/<sg>/` | publish them only with QC | they come from alignment, and have always been published |
-| Each SG's bucket derived from its dataset + `accessLevel`; `output_root` only for local/test runs | the launcher passes an output location | the bucket can't disagree with the SG or the access level |
-| An SG's dataset is its sample's project ([ADR 0008](adr/0008-sgs-from-several-datasets-published-with-publishdir.md)) | the project of the cohort that brought it in | the data belongs with its sample, whoever curated the cohort |
-| No allow-list of datasets a run may write to | a `--datasets` allow-list | the SG's project picks the bucket, so a wrong cohort can't send data to the wrong place |
-| An SG at the wrong access level fails the sample sheet step | skip it with a warning | a test run must never write to a `-main` bucket, and a full run never to a `-test` one |
-| Still one sequencing type per run | per-SG `exome/` prefix, mixed runs | resources, shard defaults and genotyping depend on it; a separate change if ever wanted |
-| `publishDir` for everything, including run records | keep `output {}` for run records | one publishing mechanism, not two |
-| `-resume` skips the run-records check | record run records in the claims file | simpler, and a resume keeps its `arGuid` by definition |
-| The concurrent-run gap is accepted ([ADR 0009](adr/0009-never-overwrite-preflight-and-publishdir-no-overwrite.md)) | re-check existence just before each publish | a small race would remain anyway, and it adds a moving part |
-| No memory watchdog for OOM | monitor RSS and kill early | `pipefail` + record checks + OOM retry already cover the header-only failure mode |
-| bwa-mem3 index built outside the pipeline | an optional `BWA_MEM3_INDEX` process | needs ~76 GB once; not per-run work |
+| choice                                                                                                                                                     | the alternative                                                                                     | why this way                                                                                                             |
+|------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|
+| Hash shards, not region shards ([ADR 0003](adr/0003-read-name-hash-shards-not-regions.md))                                                                 | region shards, as the original brief said ("roughly by regions")                                    | keeps mates together and covers unmapped reads                                                                           |
+| Failed SGs are dropped and the run exits 0 ([ADR 0017](adr/0017-failed-sgs-are-dropped-not-reported.md))                                                   | `finish` / `terminate`                                                                              | a single bad input shouldn't cost a cohort run                                                                           |
+| Failed SGs aren't reported ([ADR 0017](adr/0017-failed-sgs-are-dropped-not-reported.md))                                                                   | `failed.csv` with the step each SG failed at ([ADR 0007](adr/0007-ignore-failed-sgs-and-report.md)) | Seqera already lists the failed tasks, the bookkeeping was a large part of `main.nf`, and `-resume` is the recovery path |
+| The pre-flight check is a cached task ([ADR 0016](adr/0016-preflight-check-is-a-cached-task.md))                                                           | a claims file in the work dir                                                                       | Nextflow's cache already records that the check passed                                                                   |
+| Already-aligned SGs stay in the sheet as `aligned`                                                                                                         | leave them out until genotyping exists                                                              | genotyping is next, and they add no tasks                                                                                |
+| Single-unit fast path (`ALIGN_TO_CRAM`) kept separate from shard + merge                                                                                   | always shard + merge, even for 1 unit                                                               | skips a name-sort and a BAM round trip                                                                                   |
+| One read group per SG (`ID=SM=<sg>`, `PL:ILLUMINA`)                                                                                                        | one read group per lane (`<sg>.<unit>`)                                                             | one library per SG for dupblaster and downstream tools; lane information is lost                                         |
+| dupblaster sequencing-duplicate detection left on                                                                                                          | off by default                                                                                      | richer metrics; it fails loudly on odd read names, with an override available                                            |
+| dupblaster's clamp exit (code 1) treated as failure                                                                                                        | parse stderr and accept it                                                                          | shouldn't happen with short reads; parsing stderr is fragile                                                             |
+| QC metrics are registered as one `cram_qc` analysis per CRAM, with the CRAM as the primary file ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md))  | secondary files on the `cram` analysis; or the existing `qc` type                                   | QC can't hold up the CRAM, and `qc` already means dataset-level MultiQC reports                                          |
+| All of an SG's QC files go in one `[exome/]cram_qc/<sg>/` folder                                                                                           | cpg-flow's per-tool `qc/<tool>/` folders                                                            | one CRAM's QC is in one place; nothing binds nf-align to the old paths yet                                               |
+| CRAM QC is all or nothing, and registered only after the CRAM                                                                                              | register whatever succeeded, as soon as it's ready                                                  | consumers can rely on the set of files, and a `cram_qc` analysis never points at an unregistered CRAM                    |
+| Three QC processes, one per image                                                                                                                          | one per cpg-flow stage (four); one combined task                                                    | stages the CRAM three times, not four, without a custom image                                                            |
+| Already-aligned SGs without CRAM QC are QC'd only with `--qc_aligned` ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md))                        | always gapfill; never                                                                               | cpg-flow's CRAMs have no `cram_qc` analysis, so always gapfilling would QC every one of them in any cohort run           |
+| Interval lists are re-headed through BED with the alignment `.dict`                                                                                        | unmasked-header copies of the lists                                                                 | the same regions as cpg-flow, so metrics stay comparable                                                                 |
+| `--cram_qc false` still publishes the duplicate metrics to `cram_qc/<sg>/`                                                                                 | publish them only with QC                                                                           | they come from alignment, and have always been published                                                                 |
+| Each SG's bucket derived from its dataset + `accessLevel`; `output_root` only for local/test runs                                                          | the launcher passes an output location                                                              | the bucket can't disagree with the SG or the access level                                                                |
+| An SG's dataset is its sample's project ([ADR 0008](adr/0008-sgs-from-several-datasets-published-with-publishdir.md))                                      | the project of the cohort that brought it in                                                        | the data belongs with its sample, whoever curated the cohort                                                             |
+| No allow-list of datasets a run may write to                                                                                                               | a `--datasets` allow-list                                                                           | the SG's project picks the bucket, so a wrong cohort can't send data to the wrong place                                  |
+| An SG at the wrong access level fails the sample sheet step                                                                                                | skip it with a warning                                                                              | a test run must never write to a `-main` bucket, and a full run never to a `-test` one                                   |
+| Still one sequencing type per run                                                                                                                          | per-SG `exome/` prefix, mixed runs                                                                  | resources, shard defaults and genotyping depend on it; a separate change if ever wanted                                  |
+| `publishDir` for everything, including run records                                                                                                         | keep `output {}` for run records                                                                    | one publishing mechanism, not two                                                                                        |
+| `-resume` skips the run-records check                                                                                                                      | make it part of the cached `PREFLIGHT` task                                                         | it has to run before the sample sheet is built, and a resume keeps its `arGuid` by definition                            |
+| The concurrent-run gap is accepted ([ADR 0009](adr/0009-never-overwrite-preflight-and-publishdir-no-overwrite.md))                                         | re-check existence just before each publish                                                         | a small race would remain anyway, and it adds a moving part                                                              |
+| No memory watchdog for OOM                                                                                                                                 | monitor RSS and kill early                                                                          | `pipefail` + record checks + OOM retry already cover the header-only failure mode                                        |
+| bwa-mem3 index built outside the pipeline                                                                                                                  | an optional `BWA_MEM3_INDEX` process                                                                | needs ~76 GB once; not per-run work                                                                                      |
 
 ## B. Decided during implementation: please review
 
@@ -39,13 +41,9 @@ Part B was decided during implementation and **has not been explicitly confirmed
    dupblaster at up to 5 GB and the sort buffers, comes to about 38 GB. A 16-vCPU standard machine has
    64 GB, so in practice this shouldn't cost more than the 32 GB request would have.
    `MERGE_TO_CRAM` asks for 24 GB (8 CPUs, so it fits an `*-standard-8`).
-2. **The index files are CSV, not TSV.** Originally this was because Nextflow only accepts `.csv`,
-   `.json` or `.yaml` for workflow output index files. `WRITE_RUN_RECORDS` could now write TSV, but the
-   names `crams.csv` and `failed.csv` are kept so anything that already reads them keeps working. The
-   sample sheet itself is still `samplesheet.tsv`.
-3. **`failed.csv` has a `failed_at` column** (`align`, `somalier` or `register`), so a failed registration isn't
-   confused with a failed alignment.
-4. **Registration is retried once, then ignored** (and reported in `failed.csv`).
+2. *(Removed: `crams.csv`, ADR 0019.)*
+3. *(Removed: `failed.csv` and its `failed_at` column, ADR 0017.)*
+4. **Registration is retried once, then ignored.** `-resume` retries it again.
 5. **`BUILD_SAMPLESHEET` fails the run if no SG is in scope** (for example, every SG is the other
    sequencing type), rather than doing an empty run. A sheet where every SG is already aligned is still
    a valid run that does nothing.
@@ -70,7 +68,7 @@ Part B was decided during implementation and **has not been explicitly confirmed
 11. **The pre-flight check also covers `.crai` and metrics**, not just the CRAM. A half-published SG
     (index present, CRAM missing) still counts as a clash.
 12. **Run records live under `alignment_samplesheets/<arGuid>/` in the analysis dataset's bucket**, as
-    you specified for the sample sheet, so `crams.csv` and `failed.csv` sit next to it.
+    you specified for the sample sheet, which is now the only one (ADR 0019).
 13. **Both containers are required in every profile.** `validateParams()` fails the run at launch if
     `align_container` or `cpg_container` is unset. The `test` profile sets placeholder values, which a
     stub run never pulls.
@@ -80,27 +78,19 @@ Part B was decided during implementation and **has not been explicitly confirmed
 15. **`cohorts` and `sgids` take commas or spaces** (`COH1,COH2`), or a list from config.
     - **`sgids` fails on an SG that isn't short-read `sequencing_type`**, where cohorts mode skips it with a
       warning. A named SG is an explicit request, so a silent skip would leave it unaligned unnoticed.
-16. **Stubs:** `BUILD_SAMPLESHEET`'s stub writes a sheet with only a header (nothing to align), and
+16. **Stubs:** `BUILD_SAMPLESHEET`'s stub copies the sheet named by its `ext.stub_samplesheet`, which the stub
+    tests set from a config, or else writes a sheet with only a header (nothing to align) (ADR 0018). And
     `REGISTER_ANALYSIS`'s stub (as `REGISTER_CRAM` and `REGISTER_CRAM_QC`) echoes the `--dry` command it
     would have run.
 17. **`SORT_INDEX` stages the input reference under `in/`**, next to the reads. This avoids a name
     collision with the alignment reference when the two are the same FASTA.
 18. **The `test` profile caps resources at 2 CPUs / 4 GB.** The local executor would otherwise refuse
     the 16-CPU / 48 GB requests.
-19. **`crams.csv` lists the destination URIs of newly aligned CRAMs**, as worked out in `meta`. It doesn't
-    check that the publish succeeded, or that it wasn't skipped. This matches what the workflow output
-    index did before.
-20. **The run-records check fails if any one of the three files exists**, even when the other two are
-    missing. In `--samplesheet` mode `samplesheet.tsv` is never written, but the check still covers the
-    other two.
-21. **`WRITE_RUN_RECORDS` is a native `exec:` process**, not a `script:` process on the local executor.
-    A spike on 26.10.4 showed that a file written to `task.workDir` from Groovy, and declared as a `path`
-    output, is published by `publishDir`. It needs no container and no VM.
-22. **`WRITE_RUN_RECORDS` fails the run** (`errorStrategy 'terminate'`), as `BUILD_SAMPLESHEET` does.
-    Under the default `ignore`, a failure would have lost the run records without notice.
-23. **`crams.csv` and `failed.csv` rows are sorted by SG ID.** The records reach the process in task
-    completion order, so without sorting the input would change between attempts, and `-resume` would
-    rerun the task.
+19. *(Removed: `crams.csv`'s contents, ADR 0019.)*
+20. **The run-records check looks only for `samplesheet.tsv`**, the one run record left (ADR 0019).
+21. *(Removed: `WRITE_RUN_RECORDS` as a native `exec:` process, ADR 0019. `PREFLIGHT` is one too.)*
+22. *(Removed: `WRITE_RUN_RECORDS` failing the run, ADR 0019.)*
+23. *(Removed: sorting `crams.csv`, ADR 0019.)*
 24. **The access-level check comes before the sequencing-type filter.** An SG at the wrong access level
     fails the sample sheet step, even if it would otherwise have been skipped as the other sequencing
     type or as long-read.
@@ -131,8 +121,16 @@ Part B was decided during implementation and **has not been explicitly confirmed
 34. **A QC-only SG's `.dict` is derived from its FASTA's name** (`<name>.fasta`, `.fa` or `.fna` ->
     `<name>.dict`), with no `aligned_ref_fasta_dict` param. Picard looks for it there anyway. A FASTA with
     any other extension fails the row.
-35. **A `--samplesheet` without a `cram_qc` column has every aligned SG QC'd** with `--qc_aligned`. An empty
-    column and a missing one look the same.
+35. **An aligned row with an empty `cram_qc` is QC'd** with `--qc_aligned`. An empty column and a missing one
+    look the same, but the builder always writes the column, and there's no other way to give a sheet (ADR 0018).
 36. **`--qc_aligned true --cram_qc false` fails at launch**, rather than quietly doing nothing.
-37. **QC-only SGs aren't listed in `crams.csv`.** It lists the CRAMs the run aligned. A QC-only SG appears in
-    the run records only in `failed.csv`, if it fails.
+37. *(Removed: QC-only SGs and `crams.csv`, ADR 0019.)*
+38. **Param defaults stay in `nextflow.config`; `main.nf` declares only their types.** `conf/base.config`
+    reads several params (containers, `arGuid`, `dataset`) while the config is parsed, before `main.nf`'s
+    `params {}` block exists, so the defaults can't move into the script. Each param is therefore named in
+    both files.
+39. **`BUILD_SAMPLESHEET` fills in `aligned_ref_fasta`**, so every `aligned` row has a `reads_ref`, and `main.nf`
+    never guesses an aligned CRAM's reference.
+40. **Publishing routes files by name pattern** (`*.cram*` to `cramDir`, `*.markduplicates-metrics` and every QC
+    tool's output to `qcDir`), not by a per-file map. A new output file in one of those processes would be
+    published without being in `outputs(meta)`, so without a pre-flight check: add it to both.

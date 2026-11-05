@@ -8,6 +8,7 @@ process BUILD_SAMPLESHEET {
     val sequencing_type
     val cohorts
     val sgids
+    val aligned_ref_fasta // the reference of an aligned CRAM whose analysis doesn't record one
     val run_dir // only read by publishDir (conf/base.config)
 
     output:
@@ -21,11 +22,19 @@ process BUILD_SAMPLESHEET {
         --access-level ${access_level} \\
         --sequencing-type ${sequencing_type} \\
         ${ids} \\
+        --aligned-ref-fasta ${aligned_ref_fasta} \\
         --output samplesheet.tsv
     """
 
     stub:
-    """
-    printf 'sg_id\\tdataset\\tkind\\tn_units\\tunit\\tr1\\tr2\\treads\\treads_index\\treads_ref\\tsomalier\\n' > samplesheet.tsv
-    """
+    // stub runs have no Metamist, so a test config can hand over a prepared sheet; otherwise it's empty
+    def prepared = task.ext.stub_samplesheet
+    if (prepared) {
+        "cp ${prepared} samplesheet.tsv"
+    }
+    else {
+        """
+        printf 'sg_id\\tdataset\\tkind\\tn_units\\tunit\\tr1\\tr2\\treads\\treads_index\\treads_ref\\tsomalier\\n' > samplesheet.tsv
+        """
+    }
 }

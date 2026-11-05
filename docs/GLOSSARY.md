@@ -153,16 +153,19 @@ A file copied from the pipeline into its SG's dataset bucket at its conventional
 published: it's written directly to its final path.
 
 **Output clash**:
-A path that this run would publish, but which already exists. It stops the run before any alignment.
+A path that this run would publish, but which already exists. It stops the run before any alignment, at
+`PREFLIGHT`. A resumed run whose pre-flight check passed doesn't check again, so its own earlier attempt's files
+are never clashes (ADR 0016).
 
 **Run records**:
 The per-run directory `alignment_samplesheets/<ar-guid>/` in the analysis dataset bucket, holding the
-sample sheet, the index of published CRAMs, and the failed SGs.
+sample sheet. Neither the CRAMs the run produced (ADR 0019) nor its failed SGs (ADR 0017) are recorded there.
 
 **Failed SG**:
-An SG that didn't get through every step of a run: `align`, `somalier`, `register`, `qc` or `register_qc`.
-The rest of the run carries on, and the SG is listed in the run records once, at the first step it missed.
-An SG that fails only at `qc` or `register_qc` still has its CRAM registered.
+An SG that didn't get through every step of a run: alignment, fingerprinting, registration, CRAM QC or its
+registration. The rest of the run carries on, and the SG isn't recorded anywhere but in Seqera's task list;
+`-resume` picks it up (ADR 0017). An SG that fails only at QC or its registration still has its CRAM
+registered.
 
 **CRAM QC**:
 Quality-control metrics computed from one CRAM (newly aligned, or a QC-only SG's), kept together in one folder per SG and

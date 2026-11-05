@@ -31,16 +31,11 @@
                 },
                 "cohorts": {
                     "type": "string",
-                    "description": "Comma-separated Metamist cohort IDs to build the sample sheet from. Exactly one of cohorts, sgids or samplesheet."
+                    "description": "Comma-separated Metamist cohort IDs to build the sample sheet from. Exactly one of cohorts or sgids."
                 },
                 "sgids": {
                     "type": "string",
-                    "description": "Comma-separated Metamist sequencing group IDs, queried directly instead of through cohorts. Each must be a short-read SG of sequencing_type, and can be in any project at the run's access level. Exactly one of cohorts, sgids or samplesheet."
-                },
-                "samplesheet": {
-                    "type": "string",
-                    "format": "file-path",
-                    "description": "A prepared sample sheet TSV, with a dataset column, skipping the Metamist query. Exactly one of cohorts, sgids or samplesheet."
+                    "description": "Comma-separated Metamist sequencing group IDs, queried directly instead of through cohorts. Each must be a short-read SG of sequencing_type, and can be in any project at the run's access level. Exactly one of cohorts or sgids."
                 },
                 "output_root": {
                     "type": "string",
@@ -74,7 +69,7 @@
                 },
                 "aligned_ref_fasta": {
                     "type": "string",
-                    "description": "Reference an already-aligned CRAM is decoded with when its analysis doesn't record one: by default the DRAGEN-masked FASTA the CRAMs made before nf-align used. Needs <aligned_ref_fasta>.fai alongside."
+                    "description": "Reference an already-aligned CRAM is decoded with when its analysis doesn't record one: by default the DRAGEN-masked FASTA the CRAMs made before nf-align used. The sample sheet builder writes it into such a CRAM's row. Needs <aligned_ref_fasta>.fai alongside."
                 },
                 "somalier_sites": {
                     "type": "string",
