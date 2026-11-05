@@ -15,7 +15,13 @@ Part B was decided during implementation and **has not been explicitly confirmed
 | One read group per SG (`ID=SM=<sg>`, `PL:ILLUMINA`) | one read group per lane (`<sg>.<unit>`) | one library per SG for dupblaster and downstream tools; lane information is lost |
 | dupblaster sequencing-duplicate detection left on | off by default | richer metrics; it fails loudly on odd read names, with an override available |
 | dupblaster's clamp exit (code 1) treated as failure | parse stderr and accept it | shouldn't happen with short reads; parsing stderr is fragile |
-| Metrics are published but not registered | register them as their own analysis type | nothing reads them from Metamist yet |
+| QC metrics are registered as one `cram_qc` analysis per CRAM, with the CRAM as the primary file ([ADR 0014](adr/0014-cram-qc-one-folder-one-analysis.md)) | secondary files on the `cram` analysis; or the existing `qc` type | QC can't hold up the CRAM, and `qc` already means dataset-level MultiQC reports |
+| All of an SG's QC files go in one `[exome/]cram_qc/<sg>/` folder | cpg-flow's per-tool `qc/<tool>/` folders | one CRAM's QC is in one place; nothing binds nf-align to the old paths yet |
+| CRAM QC is all or nothing, and registered only after the CRAM | register whatever succeeded, as soon as it's ready | consumers can rely on the set of files, and a `cram_qc` analysis never points at an unregistered CRAM |
+| Three QC processes, one per image | one per cpg-flow stage (four); one combined task | stages the CRAM three times, not four, without a custom image |
+| Already-aligned SGs without CRAM QC are QC'd only with `--qc_aligned` ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)) | always gapfill; never | cpg-flow's CRAMs have no `cram_qc` analysis, so always gapfilling would QC every one of them in any cohort run |
+| Interval lists are re-headed through BED with the alignment `.dict` | unmasked-header copies of the lists | the same regions as cpg-flow, so metrics stay comparable |
+| `--cram_qc false` still publishes the duplicate metrics to `cram_qc/<sg>/` | publish them only with QC | they come from alignment, and have always been published |
 | Each SG's bucket derived from its dataset + `accessLevel`; `output_root` only for local/test runs | the launcher passes an output location | the bucket can't disagree with the SG or the access level |
 | An SG's dataset is its sample's project ([ADR 0008](adr/0008-sgs-from-several-datasets-published-with-publishdir.md)) | the project of the cohort that brought it in | the data belongs with its sample, whoever curated the cohort |
 | No allow-list of datasets a run may write to | a `--datasets` allow-list | the SG's project picks the bucket, so a wrong cohort can't send data to the wrong place |
@@ -75,7 +81,8 @@ Part B was decided during implementation and **has not been explicitly confirmed
     - **`sgids` fails on an SG that isn't short-read `sequencing_type`**, where cohorts mode skips it with a
       warning. A named SG is an explicit request, so a silent skip would leave it unaligned unnoticed.
 16. **Stubs:** `BUILD_SAMPLESHEET`'s stub writes a sheet with only a header (nothing to align), and
-    `REGISTER_ANALYSIS`'s stub echoes the `--dry` command it would have run.
+    `REGISTER_ANALYSIS`'s stub (as `REGISTER_CRAM` and `REGISTER_CRAM_QC`) echoes the `--dry` command it
+    would have run.
 17. **`SORT_INDEX` stages the input reference under `in/`**, next to the reads. This avoids a name
     collision with the alignment reference when the two are the same FASTA.
 18. **The `test` profile caps resources at 2 CPUs / 4 GB.** The local executor would otherwise refuse
@@ -102,3 +109,30 @@ Part B was decided during implementation and **has not been explicitly confirmed
     (`n2-*,n2d-*,c2d-*,c3d-*`), which was the earlier design. A wildcard gives Google Batch more choice,
     and so possibly cheaper or more available VMs. But Seqera's cost estimates need an exact type
     ([RISKS #32](RISKS.md)), and an exact type per attempt also makes the OOM-retry VM sizes explicit.
+27. **`PICARD_METRICS` asks for 12 GB, not the 16 GB agreed.** Its first VM, `n2-standard-4`, has
+    exactly 16 GB, and a request equal to the VM's memory may not fit (see `conf/base.config`). Each JVM gets
+    a 40% heap, about 4.9 GB, which is below the 8 GB cpg-flow gave each Picard job.
+    An OOM retries on `n2-highmem-4` with 24 GB. `VERIFYBAMID` is given 12 GB on the same machine types, for
+    the same reason.
+28. **`SAMTOOLS_STATS` retries an OOM on the same `e2-standard-4`** with 8 GB, then `e2-standard-8` with
+    12 GB. samtools stats uses little memory, so an OOM isn't expected.
+29. **The exome interval-list param is `exome_evaluation_interval_list`**, singular. cpg-flow calls it
+    `exome_evaluation_interval_lists`, but it's one file.
+30. **CRAM QC validates its own params.** With `cram_qc` on, the run fails at launch if
+    `verifybamid_container`, `picard_container`, `ref_fasta_dict`, or any of the run's sequencing type's
+    contamination resources and interval list are unset. Until now `ref_fasta_dict` wasn't checked at all.
+31. **QC runs even when the SG's fingerprint fails.** QC starts from the aligned CRAM, alongside
+    `SOMALIER_EXTRACT`. Such an SG is reported at `somalier`, and its published QC files, like its CRAM, are
+    clashes for the next run.
+32. **All three QC tasks stage the FASTA, `.fai` and `.dict`**, though only Picard reads the `.dict`. One
+    reference tuple is simpler than two.
+33. **`cram_qc` secondary files are ordered as the tools run, then the duplicate metrics.** The order only
+    shows on the command line, and in Metamist if it keeps it.
+34. **A QC-only SG's `.dict` is derived from its FASTA's name** (`<name>.fasta`, `.fa` or `.fna` ->
+    `<name>.dict`), with no `aligned_ref_fasta_dict` param. Picard looks for it there anyway. A FASTA with
+    any other extension fails the row.
+35. **A `--samplesheet` without a `cram_qc` column has every aligned SG QC'd** with `--qc_aligned`. An empty
+    column and a missing one look the same.
+36. **`--qc_aligned true --cram_qc false` fails at launch**, rather than quietly doing nothing.
+37. **QC-only SGs aren't listed in `crams.csv`.** It lists the CRAMs the run aligned. A QC-only SG appears in
+    the run records only in `failed.csv`, if it fails.

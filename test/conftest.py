@@ -46,7 +46,12 @@ def cram_analysis(analysis_id: int, output: str | None, somalier: str | None = N
     if output:
         secondary = {'index': {'path': f'{output}.crai'}} | ({'somalier': {'path': somalier}} if somalier else {})
         outputs = {'path': output, 'secondary_files': secondary}
-    return {'id': analysis_id, 'type': 'cram', 'output': output, 'outputs': outputs, 'meta': meta}
+    return {'id': analysis_id, 'type': 'cram', 'outputs': outputs, 'meta': meta}
+
+
+def cram_qc_analysis(analysis_id: int, cram: str) -> dict:
+    """A CRAM QC analysis as nf-align registers it: the CRAM is its primary file (ADR 0014)."""
+    return {'id': analysis_id, 'type': 'cram_qc', 'outputs': {'path': cram}, 'meta': {}}
 
 
 @pytest.fixture
@@ -54,7 +59,7 @@ def cohort_sgs(tmp_path: Path) -> list[dict]:
     """
     One SG per input kind, as local placeholder files so a stub run can stage them. CPG1-CPG3 and CPG7 are in
     PROJECT, CPG4-CPG6 in OTHER. CPG5 and CPG7 are already aligned; only CPG5's CRAM analysis has a somalier
-    fingerprint.
+    fingerprint, and only CPG5's CRAM has CRAM QC.
     """
     data = tmp_path / 'data'
     cram = touch(data / 'existing' / 'CPG5.cram')
@@ -90,8 +95,8 @@ def cohort_sgs(tmp_path: Path) -> list[dict]:
             ],
         ),
         sg('CPG4', [{'reads_type': 'bam', 'reads': {'location': touch(data / 'CPG4.bam')}}], project=OTHER),
-        sg('CPG5', analyses=[cram_analysis(1, cram, somalier=somalier)], project=OTHER),
+        sg('CPG5', analyses=[cram_analysis(1, cram, somalier=somalier), cram_qc_analysis(2, cram)], project=OTHER),
         sg('CPG6', [fastq_meta(touch(data / 'S6_R1.fq.gz'), touch(data / 'S6_R2.fq.gz'))], project=OTHER),
-        # an older CRAM, whose analysis records neither its reference nor a fingerprint
+        # an older CRAM, whose analysis records neither its reference nor a fingerprint, and that has no CRAM QC
         sg('CPG7', analyses=[cram_analysis(3, unfingerprinted)]),
     ]

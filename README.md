@@ -6,7 +6,11 @@ Takes Metamist cohorts (or a list of sequencing group IDs), which can span sever
 deduplicated, coordinate-sorted CRAM 3.0 for each short-read sequencing group, whether its input is FASTQ,
 FASTQ.ora, BAM or CRAM. It aligns with bwa-mem3 and marks duplicates with dupblaster. Each SG's CRAM is
 published into its own dataset's bucket (`cram/<SG>.cram`, or `exome/cram/<SG>.cram`) and registered in that
-dataset's Metamist project. The run records go to the analysis dataset (`--dataset`). It runs on Google Batch.
+dataset's Metamist project. Each new CRAM also gets CRAM QC (VerifyBamID, samtools stats and Picard metrics),
+published with its duplicate metrics to `[exome/]cram_qc/<SG>/` and registered as one `cram_qc` analysis
+(turn it off with `--cram_qc false`). With `--qc_aligned true`, SGs that are already aligned but have no
+`cram_qc` analysis get CRAM QC too, without being realigned, so a run over aligned SGs does QC only. The run
+records go to the analysis dataset (`--dataset`). It runs on Google Batch.
 
 ```bash
 nextflow run main.nf \

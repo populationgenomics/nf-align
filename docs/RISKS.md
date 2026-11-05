@@ -117,8 +117,8 @@ documentation.
 
 ## Metamist and GCS
 
-24. **Metamist access from Google Batch is untested.** Both `BUILD_SAMPLESHEET` and `REGISTER_ANALYSIS`
-    need the task service account to reach Metamist. Now that a run spans datasets, it needs read access
+24. **Metamist access from Google Batch is untested.** `BUILD_SAMPLESHEET`, `REGISTER_CRAM` and
+    `REGISTER_CRAM_QC` all need the task service account to reach Metamist. Now that a run spans datasets, it needs read access
     to every SG's project and write access for registering in it.
 25. **`cpg_utils.metamist_registration` only accepts `gs://` paths that exist.** ✅ Registration can't
     run locally, which is why the `test` profile sets `register = false`.
@@ -151,3 +151,32 @@ documentation.
     has nothing to estimate the task's cost from. Nothing fails, so the estimates just go missing. That's
     why every process in `conf/base.config` names one exact type per attempt. Keep it that way when
     adding a process or changing resources. This hasn't been checked against a Seqera run yet.
+
+## CRAM QC
+
+33. **The `cram_qc` analysis type has to exist in Metamist first.** If it doesn't, every SG fails at
+    `register_qc`. Its CRAM is still registered, so later runs take it as already aligned and never redo its
+    QC (see 34).
+34. **Failed CRAM QC is retried only by hand.** An SG that fails at `qc` or `register_qc` has a registered
+    CRAM, so no later run aligns it again, and its published QC files are left unregistered. A `--qc_aligned`
+    run QCs it again, but its pre-flight check stops on those files until someone deletes them
+    ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
+35. **Path-based consumers won't find the QC files.** cpg-flow's `CramMultiQC` and anything else that
+    reads `qc/<tool>/` paths need to read the `cram_qc` analysis or `cram_qc/<sg>/` instead.
+36. **Picard finds the `.dict` by name.** `PICARD_METRICS` stages `ref_fasta_dict` next to the FASTA, and
+    Picard looks for `<fasta without .fasta>.dict`. The defaults (`Homo_sapiens_assembly38.{fasta,dict}`)
+    match. A `ref_fasta_dict` with any other base name would make Picard fail to find a dictionary. A
+    QC-only SG's `.dict` is named after its FASTA, so it always matches.
+37. **The QC scripts have only run as stubs.** The commands are ported from cpg-flow's jobs, but none has
+    run here. Specifically untested: the BED round trip with the alt-annotated `.dict`, the two JVMs side by
+    side in 12 GB (each with a 40% heap, where cpg-flow gave each Picard job its own 8 GB VM), and VerifyBamID
+    reading a CRAM written against the unmasked reference.
+38. **`cpg_utils.metamist_registration` is assumed to take any secondary-file keys.** A `cram_qc` analysis
+    has nine. This is inferred from the `cram` registration, which uses two.
+39. **The DRAGEN-masked reference's `.dict` hasn't been checked.** A QC-only SG whose CRAM predates nf-align
+    is QC'd against `aligned_ref_fasta`, with `Homo_sapiens_assembly38_masked.dict` assumed to sit beside it.
+    If it doesn't, every such SG fails at `qc` ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
+40. **`--qc_aligned` over a large cohort is a large run.** cpg-flow's CRAMs have no `cram_qc` analysis, so
+    each one gets three QC tasks, each staging the whole CRAM. Launch it on purpose, maybe with `--sgids`.
+41. **A QC-only SG's duplicate metrics are found by path, and not checked.** If the file at the nf-align or
+    cpg-flow location belongs to an earlier CRAM of the SG, it's registered against the current one.
