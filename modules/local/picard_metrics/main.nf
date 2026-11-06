@@ -31,10 +31,21 @@ process PICARD_METRICS {
     // decode threads, on top of samtools' own. The JVMs take a core each, but a decode thread with nowhere to
     // write blocks on the pipe, so these only run when picard keeps up
     def threads = Math.max(1, task.cpus - 1)
-    // the interval lists' headers carry the md5s of the reference they were made against (the DRAGEN-masked
-    // one, for the genome coverage regions), and picard fails on a mismatch. A round trip through BED drops the
-    // header, and re-adds it from this CRAM's .dict: the same regions, against the right reference.
+    // The interval lists' headers carry the md5s of the unmasked reference (ref_fasta's .dict). The masked
+    // reference of CRAMs made before nf-align has the same contigs and lengths, but different md5s on its
+    // alt contigs.
+    // genome: CollectWgsMetrics checks the CRAM's header against the reference only, never the interval
+    // list's, so the list is used as it is, for any CRAM.
+    // exome: CollectHsMetrics fails unless the target and bait lists' headers match the CRAM's, md5s included.
+    // A round trip through BED drops the header and re-adds it from this CRAM's own .dict, so a QC-only SG's
+    // CRAM is checked against the right reference. For a new CRAM, it changes nothing.
     // A stream has no index, so picard reads every record and skips those outside the regions itself
+    def reheader = sequencing_type == 'genome'
+        ? ''
+        : """
+        picard IntervalListToBed -I ${intervals} -O intervals.bed
+        picard BedToIntervalList -I intervals.bed -O intervals.interval_list -SD ${dict}
+        """
     def coverage = sequencing_type == 'genome'
         ? """
         picard ${heap} CollectWgsMetrics \\
@@ -53,14 +64,15 @@ process PICARD_METRICS {
             -R ${fasta} \\
             -O ${meta.id}.picard-hs-metrics \\
             --VALIDATION_STRINGENCY SILENT \\
-            -TI ${intervals} \\
-            -BI ${intervals} \\
+            -TI intervals.interval_list \\
+            -BI intervals.interval_list \\
             -LEVEL null \\
             -LEVEL SAMPLE \\
             -LEVEL LIBRARY \\
             < coverage.fifo &
         """
     """
+    ${reheader.trim()}
 
     # each JVM reads the CRAM, decoded once, as uncompressed BAM from its own FIFO
     mkfifo multiple.fifo coverage.fifo
