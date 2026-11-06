@@ -173,15 +173,20 @@ documentation.
     match. A `ref_fasta_dict` with any other base name would make Picard fail to find a dictionary. A
     QC-only SG's `.dict` is named after its FASTA, so it always matches.
 37. **The QC scripts have only run as stubs.** The commands are ported from cpg-flow's jobs, but none has
-    run here. Specifically untested: the BED round trip with the alt-annotated `.dict`, the two JVMs side by
+    run here. Specifically untested: the exome BED round trip with the alt-annotated `.dict` (or, for a QC-only SG, the
+    masked one), the two JVMs side by
     side in 12 GB (each with a 40% heap, where cpg-flow gave each Picard job its own 8 GB VM), and VerifyBamID
     reading a CRAM written against the unmasked reference.
 38. **`cpg_utils.metamist_registration` is assumed to take any secondary-file keys.** A `cram_qc` analysis
     has nine. This is inferred from the `cram` registration, which uses two.
-39. **The DRAGEN-masked reference's `.dict` hasn't been checked.** A QC-only SG whose CRAM predates nf-align
-    is QC'd against `aligned_ref_fasta`, with `Homo_sapiens_assembly38_masked.dict` assumed to sit beside it.
-    If it doesn't, every such SG's QC fails.
+39. **A QC-only SG's CRAM is QC'd against the DRAGEN-masked reference's `.dict`.** ✅ `Homo_sapiens_assembly38_masked.dict`
+    sits beside `aligned_ref_fasta`. It has the same 3,366 contigs and lengths as `ref_fasta`'s `.dict`, but
+    different md5s on 786 of them, all alt contigs, and the interval lists are headed with `ref_fasta`'s.
+    CollectHsMetrics compares the CRAM's header with the target and bait lists' headers, md5s included
+    (Picard 3.5.0, `CollectTargetedMetrics`), so `PICARD_METRICS` re-heads the exome list from the CRAM's own
+    `.dict`. CollectWgsMetrics doesn't compare the list's header, so the genome list isn't re-headed. A
+    Picard upgrade that adds that check would fail every QC-only genome SG whose CRAM predates nf-align.
 40. **`--qc_aligned` over a large cohort is a large run.** cpg-flow's CRAMs have no `cram_qc` analysis, so
-    each one gets three QC tasks, each staging the whole CRAM. Launch it on purpose, maybe with `--sgids`.
+    each one gets four QC tasks, each staging the whole CRAM. Launch it on purpose, maybe with `--sgids`.
 41. **A QC-only SG's duplicate metrics are found by path, and not checked.** If the file at the nf-align or
     cpg-flow location belongs to an earlier CRAM of the SG, it's registered against the current one.

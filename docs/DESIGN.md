@@ -32,7 +32,7 @@ doesn't matter: a cohort in `alpha` that holds an SG from `beta` sends that SG's
 | `sequencing_type` | `genome` or `exome` |
 | `accessLevel` | `full` / `standard` (equivalent), or `test`. Applies to the whole run: every SG's Metamist project must be `<ds>` (full) or `<ds>-test` (test), and its bucket is `gs://cpg-<ds>-main` or `-test` |
 | `arGuid` | the analysis-runner GUID, used in resource labels, the per-run record directory and the registered analyses. Mandatory |
-| `cohorts` **or** `sgids` **or** `samplesheet` | exactly one: Metamist cohort IDs, Metamist SG IDs (queried directly), or a prepared sheet that skips the Metamist step |
+| `cohorts` **or** `sgids` | exactly one: Metamist cohort IDs, or Metamist SG IDs (queried directly) |
 | `output_root` | null by default, so each dataset's outputs go to its bucket. If set (the `test` profile sets `results`), they go to `<output_root>/<ds>/` instead, with the same layout below that |
 | `ref_fasta` | the alignment reference. Its `.fai`, bwa-mem3 index and `.alt` (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac,alt}`) must sit beside it, and `ref_fasta_dict` is its alt-annotated `.dict`. Aligned alt-aware |
 | `aligned_ref_fasta` | the reference of an already-aligned CRAM whose analysis doesn't record one: the DRAGEN-masked FASTA the CRAMs made before nf-align used. `BUILD_SAMPLESHEET` writes it into such a CRAM's row. Its `.fai` must sit beside it, and, for QC-only SGs, its `<name>.dict` |
@@ -249,8 +249,11 @@ written against (`ref_fasta` and `ref_fasta_dict` for a new CRAM):
 - `SAMTOOLS_STATS`: `samtools stats`, in the align image.
 - `PICARD_METRICS`: CollectMultipleMetrics, run alongside CollectWgsMetrics over
   `genome_coverage_interval_list` (genome), or CollectHsMetrics with `exome_evaluation_interval_list` as
-  both bait and target (exome). The interval list is passed through BED and back with the `.dict`, so its
-  header matches the alignment reference whichever hg38 build it was made against.
+  both bait and target (exome). Both lists' headers are `ref_fasta`'s (unmasked). CollectWgsMetrics never
+  checks the interval list's header, so the genome list is used as it is. CollectHsMetrics fails unless the
+  lists' headers match the CRAM's, md5s included, so the exome list is passed through BED and back with the
+  CRAM's own `.dict`. That matters only for a QC-only SG whose CRAM predates nf-align: the DRAGEN-masked
+  reference has the same contigs and lengths as `ref_fasta`, but different md5s on its alt contigs.
 - `MOSDEPTH`: `mosdepth --no-per-base --fast-mode --by 100 --quantize 0:1:5:20:50:`, for both sequencing
   types: the depth distribution, mean depth in 100 bp windows, and the genome split into depth bands. Its
   own task, as mosdepth reads the CRAM through its index and can't share Picard's decoded stream.
@@ -427,8 +430,7 @@ verbatim to the dupblaster command, so quote it as you would for bash:
 
 ## Status and next steps
 
-**Done**, and stub-tested: everything described above. That is the multi-dataset design (first implemented
-from [PLAN.md](PLAN.md)), fingerprinting with one `cram` analysis per CRAM, CRAM QC, `--qc_aligned`, the
+**Done**, and stub-tested: everything described above. That is the multi-dataset design, fingerprinting with one `cram` analysis per CRAM, CRAM QC, `--qc_aligned`, the
 cached pre-flight check, dropping the failure report and removing `--samplesheet` and `crams.csv`.
 `nextflow lint` is clean, and the 61 tests pass. The stub runs span two datasets and cover every input kind,
 the exome layout,
