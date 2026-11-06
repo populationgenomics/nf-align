@@ -48,8 +48,8 @@ _Avoid_: WGS/WES in parameters and paths
 How the data was sequenced. Only `short-read` is in scope.
 
 **Assay**:
-One sequencing event for an SG, as recorded in Metamist. Its metadata records the reads' type and
-locations. An SG can have several assays, and their reads are combined.
+The product of one sequencing event for a sample, as recorded in Metamist. Its metadata records the reads' type and
+locations. An SG is made up of one or more assays combined.
 
 **Analysis**:
 A Metamist record of an output file (e.g. a `cram`, `gvcf` or `vds`), linked to the SGs or cohorts it
@@ -62,7 +62,7 @@ _Avoid_: recording, submission
 
 **ar-guid**:
 The analysis-runner GUID that identifies one run. It's stamped on compute, on registered analyses, and
-on the run's record directory.
+on the run's record directory. It is also used to aggregate billing records for a NextFlow run.
 _Avoid_: run ID
 
 ### Inputs
@@ -178,29 +178,3 @@ _Avoid_: align QC, alignment QC, `qc` analysis (a different, dataset-level type)
 **CRAM companion**:
 A file that belongs to the CRAM itself and is registered on its `cram` analysis: the index and the somalier
 fingerprint. QC metrics are not companions.
-
-### Combining
-
-**gVCF**:
-One SG's single-sample genomic VCF, recorded in Metamist as an analysis of type `gvcf`. Every SG combined
-must have exactly one distinct active gVCF. Several active analyses pointing at the same file count as
-one.
-_Avoid_: VCF (a gVCF also records reference blocks)
-
-**VDS**:
-A Hail VariantDataset: many SGs' variant and reference data combined into one dataset. It is built from
-gVCFs, and can be built on top of an earlier VDS.
-_Avoid_: matrix table, callset
-
-**Base VDS**:
-The earlier VDS a combine builds on. SGs in it that are no longer requested are removed, and requested SGs
-it lacks are added from their gVCFs.
-_Avoid_: previous VDS, prior VDS
-
-**Fresh build**:
-A combine that ignores any base VDS and builds the VDS from gVCFs alone.
-
-**Refresh**:
-Replacing an SG's data in the VDS with its current gVCF. It's needed when an SG keeps its ID but its gVCF
-changes, which the VDS can't detect by itself. A refreshed SG is removed from the base VDS and added back.
-_Avoid_: replace (used loosely for a sample getting a new SG)

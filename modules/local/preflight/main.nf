@@ -1,10 +1,10 @@
 /*
- * Fail the run before any work starts if a file it would publish already exists (ADR 0009). publishDir's
+ * Fail the run before any work starts if a file it would publish already exists. publishDir's
  * overwrite: false would leave such a file in place silently, and registration would then record a file this run
- * didn't write (ADR 0013).
+ * didn't write.
  * A task, not a function in main.nf, so that -resume skips it: once it has passed, Nextflow caches it, and a resumed
  * run doesn't trip over the files its own earlier attempt published. One that failed isn't cached, so it checks
- * again (ADR 0016).
+ * again.
  * Runs natively in the Nextflow process (exec:), so it needs no container or VM.
  */
 process PREFLIGHT {

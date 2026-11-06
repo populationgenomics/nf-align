@@ -9,12 +9,10 @@ documentation.
 1. **`publishDir overwrite: false` skips silently.** ✅ (Nextflow 26.10.4, local) An existing target is
    left in place with no warning, and the exit code is 0 (`workflow.output.overwrite = false` behaved the
    same on 26.04). Overwriting isn't allowed in our buckets, so `false` is required, and the pre-flight
-   check is the only thing that catches a clash
-   ([ADR 0009](adr/0009-never-overwrite-preflight-and-publishdir-no-overwrite.md)). Don't remove it.
+   check is the only thing that catches a clash. Don't remove it.
 2. **Publishing is asynchronous.** ✅ (with workflow outputs; assumed to be the same for `publishDir`)
    A downstream task can start before its input has been published, and locally a partly copied file
-   was observed. Registration polls because of this
-   ([ADR 0005](adr/0005-registration-as-a-polling-process.md)). A cross-bucket copy of a large WGS CRAM
+   was observed. Registration polls because of this. A cross-bucket copy of a large WGS CRAM
    could take longer than `register_wait_minutes`. If that happens, the SG's registration fails while its
    CRAM is in place. `-resume` registers it; a new run trips the pre-flight check on it.
 3. **A publish refused by IAM.** If the analysis dataset's service account can't write to an SG's
@@ -31,7 +29,7 @@ documentation.
    in `main.nf` gets the string `'true'`, which the required-param check accepts. `validateParams()` catches
    it only for `dupblaster_extra_args`.
 7. **A failed run exits 0, and says nothing about it.** ✅ Under `ignore`, see
-   [ADR 0017](adr/0017-failed-sgs-are-dropped-not-reported.md). Launchers, Seqera Platform and any scripts
+   [DESIGN.md](DESIGN.md#8-failures). Launchers, Seqera Platform and any scripts
    watching the exit code will report success, and there's no `failed.csv`. Look at the failed tasks in
    Seqera, or compare the analyses registered with this `ar-guid` in Metamist with the sample sheet.
 8. **Typed params need Nextflow 26.04.** ✅ (25.10.0, 26.04.4, 26.10.4, local) The `params {}` block in
@@ -51,16 +49,16 @@ documentation.
 
 ## Re-running after a partial failure
 
-11. **A new run rebuilds the sheet; a resumed one doesn't.** There is no `--samplesheet` (ADR 0018). After a
+11. **A new run rebuilds the sheet; a resumed one doesn't.** There is no `--samplesheet`. After a
     run where some SGs failed:
     - **A new run** (new `arGuid`): the successful SGs now have CRAM analyses, so they come back as `aligned`,
       and only the failures are aligned again.
     - **Registration failures:** if registration failed, the CRAM and its fingerprint exist but aren't
       registered, so a new run trips the pre-flight check on them until they're registered or deleted by hand.
     - **Fingerprint failures:** likewise, the CRAM is published but not registered, so the next run trips the
-      pre-flight check on it (ADR 0013).
+      pre-flight check on it.
     - **`-resume`** is the way to recover: a passed pre-flight check is cached, so the earlier attempt's
-      outputs aren't clashes, and `publishDir` skips them (ADR 0016). Failed tasks, including registrations,
+      outputs aren't clashes, and `publishDir` skips them. Failed tasks, including registrations,
       run again. The cached sample sheet is reused, so SGs registered by the earlier attempt are republished
       from cache and not registered again. If the sheet's inputs change between attempts (cohorts, SG IDs,
       `aligned_ref_fasta`), it's rebuilt from Metamist, and the pre-flight check runs again and fails. The cache lives
@@ -109,10 +107,10 @@ documentation.
     `gs://cpg-common-main/rd_references/alignment/unmasked/`.
 21. **bwa-mem3 index sidecars.** If `<prefix>.hdr` or `<baseprefix>.dict` sits next to the index, bwa-mem3
     copies its `@SQ` lines verbatim. `ref_fasta_dict` is staged deliberately, and is the alt-annotated
-    `.dict` (`samtools dict --alt`), so the alt contigs keep `AH:*` (ADR 0010). Replacing it with a plain
+    `.dict` (`samtools dict --alt`), so the alt contigs keep `AH:*`. Replacing it with a plain
     GATK `.dict` would drop those tags from every CRAM header.
-22. **How alt awareness affects alignment wasn't checked.** We align alt-aware (`<ref_fasta>.alt` is staged,
-    ADR 0010), so reads in alt-haplotype regions should stay primary on the primary assembly instead of
+22. **How alt awareness affects alignment wasn't checked.** We align alt-aware (`<ref_fasta>.alt` is staged),
+    so reads in alt-haplotype regions should stay primary on the primary assembly instead of
     getting MAPQ 0. The stub tests can't show this. Check the first real CRAMs: their `@SQ` alt contigs
     carry `AH`, and MAPQ in alt-haplotype regions isn't pulled down to 0.
 23. **The input reference falls back to the alignment reference.** ✅ A CRAM whose assay has no
@@ -138,7 +136,7 @@ documentation.
 29. **Two runs for the same SG.** Two runs launched close together for the same SG can both pass the
     pre-flight check. The second run's publish is skipped silently, and it registers the first run's CRAM
     under its own `ar-guid`. That leaves two active `cram` analyses, and the sample sheet builder takes
-    the latest. This is accepted ([ADR 0009](adr/0009-never-overwrite-preflight-and-publishdir-no-overwrite.md)).
+    the latest. This is accepted.
 30. **Every dataset is assumed to have a `gs://cpg-<ds>-{main,test}` bucket.** The SG's bucket comes from
     its project name by convention, and isn't looked up. A dataset that doesn't follow the convention
     fails at the pre-flight check or at publishing.
@@ -167,8 +165,7 @@ documentation.
     QC (see 34).
 34. **Failed CRAM QC is retried only by hand.** An SG that fails at `qc` or `register_qc` has a registered
     CRAM, so no later run aligns it again, and its published QC files are left unregistered. A `--qc_aligned`
-    run QCs it again, but its pre-flight check stops on those files until someone deletes them
-    ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
+    run QCs it again, but its pre-flight check stops on those files until someone deletes them.
 35. **Path-based consumers won't find the QC files.** cpg-flow's `CramMultiQC` and anything else that
     reads `qc/<tool>/` paths need to read the `cram_qc` analysis or `cram_qc/<sg>/` instead.
 36. **Picard finds the `.dict` by name.** `PICARD_METRICS` stages `ref_fasta_dict` next to the FASTA, and
@@ -183,7 +180,7 @@ documentation.
     has nine. This is inferred from the `cram` registration, which uses two.
 39. **The DRAGEN-masked reference's `.dict` hasn't been checked.** A QC-only SG whose CRAM predates nf-align
     is QC'd against `aligned_ref_fasta`, with `Homo_sapiens_assembly38_masked.dict` assumed to sit beside it.
-    If it doesn't, every such SG's QC fails ([ADR 0015](adr/0015-qc-already-aligned-crams-on-request.md)).
+    If it doesn't, every such SG's QC fails.
 40. **`--qc_aligned` over a large cohort is a large run.** cpg-flow's CRAMs have no `cram_qc` analysis, so
     each one gets three QC tasks, each staging the whole CRAM. Launch it on purpose, maybe with `--sgids`.
 41. **A QC-only SG's duplicate metrics are found by path, and not checked.** If the file at the nf-align or

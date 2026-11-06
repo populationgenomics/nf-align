@@ -17,11 +17,11 @@ cpg-flow (cpg_flow.inputs, cpg_flow.metamist):
 - reads are combined across an SG's assays, each assay contributing one FASTQ pair (or the CRAM/BAM)
 - an SG with a completed, active 'cram' analysis is already aligned, and gets one 'aligned' row. That row
   carries the CRAM's reference: the one its analysis records, or --aligned-ref-fasta for a CRAM made before
-  nf-align recorded it (ADR 0006). And its somalier fingerprint, if the analysis has one as a 'somalier'
+  nf-align recorded it. And its somalier fingerprint, if the analysis has one as a 'somalier'
   secondary file. main.nf leaves an aligned SG as it is, fingerprint or not
 - an aligned row also records the ID of its CRAM's completed, active 'cram_qc' analysis, if it has one: one
   whose primary file (outputs.path) is that same CRAM, so QC of an earlier CRAM doesn't count. With
-  --qc_aligned, main.nf QCs an aligned SG that has none (ADR 0015)
+  --qc_aligned, main.nf QCs an aligned SG that has none
 - read locations are used exactly as recorded in Metamist
 
     build_samplesheet.py --access-level standard --sequencing-type genome \\
@@ -356,7 +356,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--aligned-ref-fasta',
         required=True,
-        help="the reference of an already-aligned CRAM whose analysis doesn't record one (ADR 0006)",
+        help="the reference of an already-aligned CRAM whose analysis doesn't record one",
     )
     parser.add_argument('--output', required=True, help='Sample sheet TSV to write')
     main(parser.parse_args())
