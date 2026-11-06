@@ -2,7 +2,7 @@
  * Alignment of one sequencing type: Metamist cohorts or SGs, from any number of datasets -> sample sheet ->
  * bwa-mem3 + dupblaster -> CRAM, fingerprinted and QC'd, published to and registered in each SG's own dataset. Run
  * records go to the analysis dataset (params.dataset). With --qc_aligned, already-aligned SGs without CRAM QC are
- * QC'd too, without realigning (ADR 0015). See DESIGN.md.
+ * QC'd too, without realigning. See DESIGN.md.
  */
 
 include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
@@ -103,13 +103,13 @@ def qcToolFiles(id) {
     suffixes.collectEntries { key, suffix -> [(key): "${id}.${suffix}".toString()] }
 }
 
-// the files of an SG's cram analysis (ADR 0012): the CRAM, then its secondary files
+// the files of an SG's cram analysis: the CRAM, then its secondary files
 def cramFiles(meta) {
     [cram: meta.cram, index: "${meta.cram}.crai".toString(), somalier: "${meta.cram}.somalier".toString()]
 }
 
-// the QC files this run publishes for an SG, the secondary files of its cram_qc analysis (ADR 0014): its QC tools'
-// files (with --cram_qc), then the duplicate metrics, which come from alignment, so a QC-only SG has none (ADR 0015)
+// the QC files this run publishes for an SG, the secondary files of its cram_qc analysis: its QC tools'
+// files (with --cram_qc), then the duplicate metrics, which come from alignment, so a QC-only SG has none
 def qcFiles(meta) {
     def names = (params.cram_qc ? qcToolFiles(meta.id) : [:]) +
         (meta.qcOnly ? [:] : [markduplicates_metrics: "${meta.id}.markduplicates-metrics".toString()])
@@ -135,7 +135,7 @@ def outputs(meta) {
 
 // a QC-only SG's duplicate metrics, if the run that aligned it published them in the SG's dataset: nf-align's
 // cram_qc/<sg>/, or cpg-flow's qc/markduplicates_metrics/. [markduplicates_metrics: uri], or [:] if neither
-// exists. Not this run's file, so it's only looked for, never published or checked (ADR 0015)
+// exists. Not this run's file, so it's only looked for, never published or checked
 def existingDuplicateMetrics(meta) {
     def name = "${meta.id}.markduplicates-metrics"
     def found = ["${meta.qcDir}/${name}", "${datasetRoot(meta.dataset)}/${typePrefix()}qc/markduplicates_metrics/${name}"]
@@ -201,7 +201,7 @@ def validateParams() {
 /*
  * Fail before the sample sheet is built if this arGuid's run records already exist: publishDir would keep the
  * old ones silently. arGuid is unique in production, but set by hand while testing. A resumed run finds its
- * own records there, so -resume skips the check (ADR 0009).
+ * own records there, so -resume skips the check.
  */
 def checkNoRunRecords() {
     if (workflow.resume) {
@@ -223,7 +223,7 @@ def parseRow(r) {
         fail("Unknown kind '${r.kind}' for ${r.sg_id}, expected one of ${kinds}")
     }
     // a CRAM decodes only against the reference it was written with. The sample sheet builder fills it in for
-    // an aligned SG whose analysis doesn't record one (ADR 0006)
+    // an aligned SG whose analysis doesn't record one
     if (r.kind in ['cram', 'aligned'] && !r.reads_ref) {
         fail("${r.sg_id}: ${r.kind} rows need reads_ref, the reference the CRAM was written against")
     }
@@ -245,7 +245,7 @@ def parseRow(r) {
         cramDir: "${base}cram".toString(),
         qcDir: "${base}cram_qc/${r.sg_id}".toString(),
         // with --qc_aligned, an already-aligned SG whose CRAM has no cram_qc analysis gets CRAM QC, and nothing
-        // else (ADR 0015)
+        // else
         qcOnly: aligned && params.qc_aligned && !r.cram_qc,
     ]
     if (meta.qcOnly && !refDict(meta.ref)) {
@@ -268,14 +268,14 @@ workflow {
 
     // the FASTA and everything that sits beside it: its .fai, the bwa-mem3 index built with the FASTA as prefix,
     // and the .alt that makes alignment alt-aware. Staged side by side, so the FASTA's own name is the bwa-mem3
-    // index prefix. The alt-annotated .dict goes too: bwa-mem3 copies its @SQ lines, AH tags and all (ADR 0010)
+    // index prefix. The alt-annotated .dict goes too: bwa-mem3 copies its @SQ lines, AH tags and all
     def ref_suffixes = ['fai', 'bwt.2bit.64', 'amb', 'ann', 'pac', 'alt']
     def reference = channel.value([file(params.ref_fasta), file(params.ref_fasta_dict), ref_suffixes.collect { ext -> file("${params.ref_fasta}.${ext}") }])
 
     // every run starts from a sheet built from Metamist: SGs are discovered through cohorts, or queried directly,
     // and one of the two lists is empty. A resumed run takes the sheet from the cache, not from Metamist, which
     // would by now see the SGs its first attempt registered as aligned. So it carries on with the same SGs, and
-    // the cached pre-flight check lets its own published files through (ADR 0018)
+    // the cached pre-flight check lets its own published files through
     def cohorts = params.cohorts ? idList(params.cohorts) : []
     def sgids = params.sgids ? idList(params.sgids) : []
     def sheet = BUILD_SAMPLESHEET(params.accessLevel, params.sequencing_type, cohorts, sgids, params.aligned_ref_fasta, runDir())
@@ -305,7 +305,7 @@ workflow {
     )
 
     // QC each newly aligned CRAM, alongside its fingerprint and apart from its registration: a QC failure never
-    // holds up the CRAM (ADR 0014). And each QC-only SG's registered CRAM (ADR 0015). Each against the reference it
+    // holds up the CRAM. And each QC-only SG's registered CRAM. Each against the reference it
     // was written with: only the FASTA, .fai and .dict are staged
     def qc = channel.empty()
     if (params.cram_qc) {
@@ -322,7 +322,7 @@ workflow {
 
     if (params.register) {
         // one analysis per SG: the CRAM, with its index and fingerprint as secondary files. A CRAM whose fingerprint
-        // failed isn't registered (ADR 0012)
+        // failed isn't registered
         def registered = REGISTER_CRAM(
             fingerprinted.map { meta, _somalier ->
                 def files = cramFiles(meta)
@@ -333,8 +333,8 @@ workflow {
         )
 
         // and one cram_qc analysis per SG: the CRAM again, with every QC file as a secondary file. Only once the
-        // CRAM's own analysis exists, so it never points at an unregistered CRAM (ADR 0014). A QC-only SG's is
-        // registered already, and its duplicate metrics are whatever its aligning run left, if anything (ADR 0015)
+        // CRAM's own analysis exists, so it never points at an unregistered CRAM. A QC-only SG's is
+        // registered already, and its duplicate metrics are whatever its aligning run left, if anything
         def has_cram_analysis = registered.mix(rows.qc_only.map { meta, _r -> meta })
         REGISTER_CRAM_QC(
             qc.map { meta, _files -> [meta.id, meta] }

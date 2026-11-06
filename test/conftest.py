@@ -50,7 +50,7 @@ def cram_analysis(analysis_id: int, output: str | None, somalier: str | None = N
 
 
 def cram_qc_analysis(analysis_id: int, cram: str) -> dict:
-    """A CRAM QC analysis as nf-align registers it: the CRAM is its primary file (ADR 0014)."""
+    """A CRAM QC analysis as nf-align registers it: the CRAM is its primary file."""
     return {'id': analysis_id, 'type': 'cram_qc', 'outputs': {'path': cram}, 'meta': {}}
 
 

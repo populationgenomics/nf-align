@@ -31,6 +31,5 @@ uv sync && uv run pytest
 Documentation:
 - [docs/DESIGN.md](docs/DESIGN.md): design brief, flow, outputs, resources, status and next steps
 - [docs/GLOSSARY.md](docs/GLOSSARY.md): domain terms
-- [docs/adr/](docs/adr/): decision records
 - [docs/RISKS.md](docs/RISKS.md): what may bite later
 - [docs/AMBIGUOUS-CHOICES.md](docs/AMBIGUOUS-CHOICES.md): judgement calls, including ones made during implementation that still need review

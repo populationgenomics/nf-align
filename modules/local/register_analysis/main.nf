@@ -1,7 +1,7 @@
 /*
  * Record one published file as a Metamist analysis of `type`, in the SG's own project (meta.project), with its
- * secondary files and analysis meta. Included as REGISTER_CRAM (the CRAM, ADR 0012) and REGISTER_CRAM_QC (its
- * QC metrics, ADR 0014). The URIs come from main.nf, built from the same meta fields publishDir publishes with
+ * secondary files and analysis meta. Included as REGISTER_CRAM (the CRAM) and REGISTER_CRAM_QC (its
+ * QC metrics). The URIs come from main.nf, built from the same meta fields publishDir publishes with
  */
 process REGISTER_ANALYSIS {
     tag "${meta.id}"

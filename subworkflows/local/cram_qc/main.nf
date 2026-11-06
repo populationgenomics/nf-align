@@ -1,8 +1,8 @@
 /*
  * CRAM QC: VerifyBamID, samtools stats, Picard metrics and mosdepth coverage of each CRAM, in parallel, one task per
- * tool's image. The CRAMs are newly aligned ones, and with --qc_aligned already-aligned ones too (ADR 0015), so each
+ * tool's image. The CRAMs are newly aligned ones, and with --qc_aligned already-aligned ones too, so each
  * comes with the reference it was written against. An SG is emitted only once all four have succeeded, so its CRAM
- * QC is all or nothing (ADR 0014).
+ * QC is all or nothing.
  */
 
 include { VERIFYBAMID } from '../../../modules/local/verifybamid'
