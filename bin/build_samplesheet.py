@@ -35,6 +35,7 @@ import logging
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
+from cpg_utils.existence_checks import exists
 from metamist.graphql import gql, query
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,14 @@ COLUMNS = [
     'reads_ref',
     'somalier',
     'cram_qc',
+]
+COLS_TO_CHECK = [
+    'r1',
+    'r2',
+    'reads',
+    'reads_index',
+    'reads_ref',
+    'somalier',
 ]
 SEQUENCING_TYPES = {'genome', 'exome'}
 ACCESS_LEVELS = {'full', 'standard', 'test'}
@@ -319,6 +328,28 @@ def write_sheet(rows: list[dict], path: str) -> None:
         writer.writerows(rows)
 
 
+def check_input_existence(rows: list[dict]) -> None:
+    """
+    Check that every file a row points at exists: its reads, index and reference, including an aligned
+    SG's existing CRAM. Reports every missing file at once, not one per run.
+    """
+    errors: list[str] = []
+    for row in rows:
+        # rows only carry the columns for their kind, e.g. a FASTQ row has no 'reads'
+        files_to_check = {col: row[col] for col in COLS_TO_CHECK if row.get(col)}
+        # every kind of row has at least one file, so this would be a bug in rows_for
+        if not files_to_check:
+            errors.append(f'{row["sg_id"]} unit {row["unit"]}: no files to check')
+            continue
+        errors.extend(
+            f'{row["sg_id"]} unit {row["unit"]}: {col} {path} does not exist'
+            for col, path in files_to_check.items()
+            if not exists(path)
+        )
+    if errors:
+        raise SamplesheetError('\n'.join(errors))
+
+
 def main(args: Namespace) -> None:
     access_level, sequencing_type, output = args.access_level, args.sequencing_type, args.output
     if args.cohorts:
@@ -326,6 +357,7 @@ def main(args: Namespace) -> None:
     else:
         sgs = fetch_sgs(sorted(set(args.sgids)), sequencing_type)
     rows = build_rows(sgs, access_level, sequencing_type, args.aligned_ref_fasta)
+    check_input_existence(rows)
     write_sheet(rows, output)
     n_sgs = len({row['sg_id'] for row in rows})
     n_datasets = len({row['dataset'] for row in rows})

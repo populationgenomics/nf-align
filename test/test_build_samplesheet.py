@@ -5,7 +5,15 @@ import csv
 
 import build_samplesheet
 import pytest
-from build_samplesheet import SamplesheetError, build_rows, fetch_cohort_sgs, fetch_sgs, rows_for, write_sheet
+from build_samplesheet import (
+    SamplesheetError,
+    build_rows,
+    check_input_existence,
+    fetch_cohort_sgs,
+    fetch_sgs,
+    rows_for,
+    write_sheet,
+)
 from conftest import OTHER, PROJECT, cohort, cram_analysis, cram_qc_analysis, fastq_meta, sg
 from metamist.graphql import gql, validate
 
@@ -244,3 +252,26 @@ def test_write_sheet_has_every_column(tmp_path, cohort_sgs):
         rows = list(csv.DictReader(handle, delimiter='\t'))
     assert list(rows[0]) == build_samplesheet.COLUMNS
     assert rows[4]['reads_index'] == ''
+
+
+def test_existence_check_passes_when_every_file_exists(monkeypatch, cohort_sgs):
+    checked = []
+    monkeypatch.setattr(build_samplesheet, 'exists', lambda path: checked.append(path) or True)
+    rows = build_rows(cohort_sgs, 'standard', 'genome', MASKED)
+    check_input_existence(rows)
+    assert MASKED in checked  # an aligned row's reference
+    assert rows[0]['r1'] in checked
+    assert rows[5]['reads'] in checked  # an aligned SG's existing CRAM
+    assert '' not in checked  # empty columns, e.g. an unindexed BAM, aren't checked
+
+
+def test_missing_files_are_reported_together(monkeypatch, cohort_sgs):
+    rows = build_rows(cohort_sgs, 'standard', 'genome', MASKED)
+    missing = {rows[0]['r2'], rows[3]['reads_index']}
+    monkeypatch.setattr(build_samplesheet, 'exists', lambda path: path not in missing)
+    with pytest.raises(SamplesheetError) as error:
+        check_input_existence(rows)
+    assert str(error.value).splitlines() == [
+        f'CPG1 unit 1: r2 {rows[0]["r2"]} does not exist',
+        f'CPG3 unit 1: reads_index {rows[3]["reads_index"]} does not exist',
+    ]
