@@ -162,13 +162,13 @@
                     "type": "string",
                     "description": "VerifyBamID's MU contamination resource for exomes."
                 },
-                "genome_coverage_interval_list": {
+                "genome_coverage_regions": {
                     "type": "string",
-                    "description": "Regions CollectWgsMetrics measures coverage over. Its header is replaced with ref_fasta_dict's, so it can have been made against another build of hg38."
+                    "description": "BED of the regions CollectWgsMetrics measures coverage over. Converted to an interval list headed with each CRAM's own .dict."
                 },
-                "exome_evaluation_interval_list": {
+                "exome_evaluation_regions": {
                     "type": "string",
-                    "description": "Bait and target regions for CollectHsMetrics. Its header is replaced with ref_fasta_dict's."
+                    "description": "BED of the bait and target regions for CollectHsMetrics. Converted to an interval list headed with each CRAM's own .dict."
                 }
             }
         }

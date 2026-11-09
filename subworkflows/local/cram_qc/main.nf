@@ -14,7 +14,7 @@ workflow CRAM_QC {
     take:
     crams           // [meta, cram, crai, fasta, fai, dict], each CRAM with the reference it was written against
     contamination   // value: [ud, bed, mu], VerifyBamID's resources for the sequencing type
-    intervals       // value: genome coverage, or exome evaluation, interval list
+    intervals       // value: genome coverage, or exome evaluation, BED format
     sequencing_type // string: genome | exome
 
     main:
