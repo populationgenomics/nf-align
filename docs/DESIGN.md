@@ -54,7 +54,7 @@ Switches and tuning, all with defaults in `nextflow.config`:
 | `realignment_shards`                                                                                                                                                      | 0              | bazam shards per CRAM/BAM input; 0 means 6 for genomes and 1 for exomes                                                                         |
 | `dupblaster_extra_args`                                                                                                                                                   | `''`           | appended verbatim to the dupblaster command (see Running)                                                                                       |
 | `somalier_sites`                                                                                                                                                          | hg38 sites VCF | where somalier fingerprints each CRAM                                                                                                           |
-| `verifybamid_container`, `picard_container`, `mosdepth_container`, `{genome,exome}_contam_{ud,bed,mu}`, `genome_coverage_interval_list`, `exome_evaluation_interval_list` | cpg-flow's     | CRAM QC's images and references. With `cram_qc` on, the run fails at launch if the images or the sequencing type's references are unset         |
+| `verifybamid_container`, `picard_container`, `mosdepth_container`, `{genome,exome}_contam_{ud,bed,mu}`, `genome_coverage_regions`, `exome_evaluation_regions`             | cpg-flow's     | CRAM QC's images and references. With `cram_qc` on, the run fails at launch if the images or the sequencing type's references are unset         |
 
 There is no `outputDir`: every destination is worked out per SG (see Outputs). The launcher supplies
 `-work-dir` and `google.project`; the config never sets them.
@@ -248,12 +248,12 @@ written against (`ref_fasta` and `ref_fasta_dict` for a new CRAM):
   (`<type>_contam_{ud,bed,mu}`), capped at depth 1000 for exomes.
 - `SAMTOOLS_STATS`: `samtools stats`, in the align image.
 - `PICARD_METRICS`: CollectMultipleMetrics, run alongside CollectWgsMetrics over
-  `genome_coverage_interval_list` (genome), or CollectHsMetrics with `exome_evaluation_interval_list` as
-  both bait and target (exome). Both lists' headers are `ref_fasta`'s (unmasked). CollectWgsMetrics never
-  checks the interval list's header, so the genome list is used as it is. CollectHsMetrics fails unless the
-  lists' headers match the CRAM's, md5s included, so the exome list is passed through BED and back with the
-  CRAM's own `.dict`. That matters only for a QC-only SG whose CRAM predates nf-align: the DRAGEN-masked
-  reference has the same contigs and lengths as `ref_fasta`, but different md5s on its alt contigs.
+  `genome_coverage_regions` (genome), or CollectHsMetrics with `exome_evaluation_regions` as both bait and
+  target (exome). The regions are stored as BED, with no reference header, and `BedToIntervalList` turns them
+  into an interval list headed with the CRAM's own `.dict`, for both sequencing types. CollectHsMetrics fails
+  unless the lists' headers match the CRAM's, md5s included, and the DRAGEN-masked reference of a QC-only
+  SG's CRAM that predates nf-align has the same contigs and lengths as `ref_fasta`, but different md5s on its
+  alt contigs.
 - `MOSDEPTH`: `mosdepth --no-per-base --fast-mode --by 100 --quantize 0:1:5:20:50:`, for both sequencing
   types: the depth distribution, mean depth in 100 bp windows, and the genome split into depth bands. Its
   own task, as mosdepth reads the CRAM through its index and can't share Picard's decoded stream.

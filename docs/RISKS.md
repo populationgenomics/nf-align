@@ -49,8 +49,7 @@ documentation.
 
 ## Re-running after a partial failure
 
-11. **A new run rebuilds the sheet; a resumed one doesn't.** There is no `--samplesheet`. After a
-    run where some SGs failed:
+11. **A new run rebuilds the sheet; a resumed one doesn't.** After a run where some SGs failed:
     - **A new run** (new `arGuid`): the successful SGs now have CRAM analyses, so they come back as `aligned`,
       and only the failures are aligned again.
     - **Registration failures:** if registration failed, the CRAM and its fingerprint exist but aren't
@@ -101,10 +100,6 @@ documentation.
 
 ## Reference and index
 
-20. **No public bwa-mem3 index exists for this reference.** ✅ The Broad bucket only has bwa 0.7 indexes
-    and GENCODE bwa-mem2 builds. Building one needs about 76 GB of RAM: run `bwa-mem3 index` on a
-    highmem machine once, and store the result next to the FASTA. Built, beside `ref_fasta` in
-    `gs://cpg-common-main/rd_references/alignment/unmasked/`.
 21. **bwa-mem3 index sidecars.** If `<prefix>.hdr` or `<baseprefix>.dict` sits next to the index, bwa-mem3
     copies its `@SQ` lines verbatim. `ref_fasta_dict` is staged deliberately, and is the alt-annotated
     `.dict` (`samtools dict --alt`), so the alt contigs keep `AH:*`. Replacing it with a plain
@@ -120,14 +115,8 @@ documentation.
 
 ## Metamist and GCS
 
-24. **Metamist access from Google Batch is untested.** `BUILD_SAMPLESHEET`, `REGISTER_CRAM` and
-    `REGISTER_CRAM_QC` all need the task service account to reach Metamist. Now that a run spans datasets, it needs read access
-    to every SG's project and write access for registering in it.
 25. **`cpg_utils.metamist_registration` only accepts `gs://` paths that exist.** ✅ Registration can't
     run locally, which is why the `test` profile sets `register = false`.
-26. **Already-aligned rows are never checked.** If a registered CRAM has been deleted, nothing notices
-    until something (later, genotyping) tries to read it.
-27. **An analysis with `output` set but its file missing** is treated as already aligned, as in (26).
 28. **Cohorts and SGs the run can't see may just be missing.** The top-level `cohorts(id:)` and
     `sequencingGroups(id:)` queries most likely leave out what the credentials can't read, rather than
     raising an error. So the sample sheet step reports them as "missing or not visible". If a cohort is
@@ -137,17 +126,13 @@ documentation.
     pre-flight check. The second run's publish is skipped silently, and it registers the first run's CRAM
     under its own `ar-guid`. That leaves two active `cram` analyses, and the sample sheet builder takes
     the latest. This is accepted.
-30. **Every dataset is assumed to have a `gs://cpg-<ds>-{main,test}` bucket.** The SG's bucket comes from
-    its project name by convention, and isn't looked up. A dataset that doesn't follow the convention
-    fails at the pre-flight check or at publishing.
 31. **Per-SG resource labels only move cost under `seqr`.** ✅ A `resourceLabels` closure is evaluated
     per task against `meta` (Nextflow 26.10.4, local executor), and
     `test_per_sg_tasks_are_labelled_with_the_sgs_dataset` checks every per-SG task's label in a stub run.
     Production billing for a run under `seqr` shows Google Batch applies the labels, and each SG's
     compute appears under its own dataset. Only the seqr GCP project's costs are redistributed by the
     `dataset` label, though. A run under any other analysis dataset is billed wholly to that dataset,
-    and the label only tags the rows (DESIGN.md §4). Under `seqr`, the gross `seqr` rows and their
-    credits net to zero, so a billing view without the credit rows looks like a double count.
+    and the label only tags the rows (DESIGN.md §4).
 
 ## Cost
 
@@ -160,33 +145,15 @@ documentation.
 
 ## CRAM QC
 
-33. **The `cram_qc` analysis type has to exist in Metamist first.** If it doesn't, every SG fails at
-    `register_qc`. Its CRAM is still registered, so later runs take it as already aligned and never redo its
-    QC (see 34).
 34. **Failed CRAM QC is retried only by hand.** An SG that fails at `qc` or `register_qc` has a registered
     CRAM, so no later run aligns it again, and its published QC files are left unregistered. A `--qc_aligned`
     run QCs it again, but its pre-flight check stops on those files until someone deletes them.
 35. **Path-based consumers won't find the QC files.** cpg-flow's `CramMultiQC` and anything else that
     reads `qc/<tool>/` paths need to read the `cram_qc` analysis or `cram_qc/<sg>/` instead.
-36. **Picard finds the `.dict` by name.** `PICARD_METRICS` stages `ref_fasta_dict` next to the FASTA, and
-    Picard looks for `<fasta without .fasta>.dict`. The defaults (`Homo_sapiens_assembly38.{fasta,dict}`)
-    match. A `ref_fasta_dict` with any other base name would make Picard fail to find a dictionary. A
-    QC-only SG's `.dict` is named after its FASTA, so it always matches.
-37. **The QC scripts have only run as stubs.** The commands are ported from cpg-flow's jobs, but none has
-    run here. Specifically untested: the exome BED round trip with the alt-annotated `.dict` (or, for a QC-only SG, the
-    masked one), the two JVMs side by
-    side in 12 GB (each with a 40% heap, where cpg-flow gave each Picard job its own 8 GB VM), and VerifyBamID
-    reading a CRAM written against the unmasked reference.
-38. **`cpg_utils.metamist_registration` is assumed to take any secondary-file keys.** A `cram_qc` analysis
-    has nine. This is inferred from the `cram` registration, which uses two.
 39. **A QC-only SG's CRAM is QC'd against the DRAGEN-masked reference's `.dict`.** ✅ `Homo_sapiens_assembly38_masked.dict`
     sits beside `aligned_ref_fasta`. It has the same 3,366 contigs and lengths as `ref_fasta`'s `.dict`, but
-    different md5s on 786 of them, all alt contigs, and the interval lists are headed with `ref_fasta`'s.
-    CollectHsMetrics compares the CRAM's header with the target and bait lists' headers, md5s included
-    (Picard 3.5.0, `CollectTargetedMetrics`), so `PICARD_METRICS` re-heads the exome list from the CRAM's own
-    `.dict`. CollectWgsMetrics doesn't compare the list's header, so the genome list isn't re-headed. A
-    Picard upgrade that adds that check would fail every QC-only genome SG whose CRAM predates nf-align.
-40. **`--qc_aligned` over a large cohort is a large run.** cpg-flow's CRAMs have no `cram_qc` analysis, so
-    each one gets four QC tasks, each staging the whole CRAM. Launch it on purpose, maybe with `--sgids`.
-41. **A QC-only SG's duplicate metrics are found by path, and not checked.** If the file at the nf-align or
-    cpg-flow location belongs to an earlier CRAM of the SG, it's registered against the current one.
+    different md5s on 786 of them, all alt contigs. CollectHsMetrics compares the CRAM's header with the
+    target and bait lists' headers, md5s included (Picard 3.5.0, `CollectTargetedMetrics`). The regions are
+    stored as BED, with no header, and `PICARD_METRICS` makes the interval list from the CRAM's own `.dict`
+    for both sequencing types, so neither metric can see a mismatched header. Every reference a CRAM is QC'd
+    against needs a `.dict` beside it.
