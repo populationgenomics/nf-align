@@ -53,8 +53,8 @@ params {
     exome_contam_ud: String?
     exome_contam_bed: String?
     exome_contam_mu: String?
-    genome_coverage_interval_list: String?
-    exome_evaluation_interval_list: String?
+    genome_coverage_regions: String?
+    exome_evaluation_regions: String?
 }
 
 /*
@@ -166,11 +166,11 @@ def idList(param) {
 }
 
 // the param names of the references CRAM QC reads, for the run's sequencing type: VerifyBamID's contamination
-// resources, and Picard's interval list
+// resources, and Picard's region file
 def cramQcRefParams() {
     def type = params.sequencing_type
     ['ud', 'bed', 'mu'].collectEntries { ext -> [(ext): "${type}_contam_${ext}".toString()] } +
-        [intervals: type == 'genome' ? 'genome_coverage_interval_list' : 'exome_evaluation_interval_list']
+        [intervals: type == 'genome' ? 'genome_coverage_regions' : 'exome_evaluation_regions']
 }
 
 // what the params block can't check: allowed values, and params that are needed together or not at all

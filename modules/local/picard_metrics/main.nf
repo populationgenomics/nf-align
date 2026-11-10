@@ -31,9 +31,11 @@ process PICARD_METRICS {
     // decode threads, on top of samtools' own. The JVMs take a core each, but a decode thread with nowhere to
     // write blocks on the pipe, so these only run when picard keeps up
     def threads = Math.max(1, task.cpus - 1)
-    // the interval lists' headers carry the md5s of the reference they were made against (the DRAGEN-masked
-    // one, for the genome coverage regions), and picard fails on a mismatch. A round trip through BED drops the
-    // header, and re-adds it from this CRAM's .dict: the same regions, against the right reference.
+    // Interval lists' headers carry md5s of the reference they were generated with (ref_fasta's .dict).
+    // We store intervals in BED format to prevent attachment to any specific reference genome, and reheader
+    // within the process to be Picard compatible.
+
+    // the coverage checking command, chosen depending on whether the file is exome or genome
     // A stream has no index, so picard reads every record and skips those outside the regions itself
     def coverage = sequencing_type == 'genome'
         ? """
@@ -42,7 +44,7 @@ process PICARD_METRICS {
             -R ${fasta} \\
             -O ${meta.id}.picard-wgs-metrics \\
             --VALIDATION_STRINGENCY SILENT \\
-            --INTERVALS ${intervals} \\
+            --INTERVALS intervals.interval_list \\
             --USE_FAST_ALGORITHM true \\
             --READ_LENGTH 250 \\
             < coverage.fifo &
@@ -53,14 +55,17 @@ process PICARD_METRICS {
             -R ${fasta} \\
             -O ${meta.id}.picard-hs-metrics \\
             --VALIDATION_STRINGENCY SILENT \\
-            -TI ${intervals} \\
-            -BI ${intervals} \\
+            -TI intervals.interval_list \\
+            -BI intervals.interval_list \\
             -LEVEL null \\
             -LEVEL SAMPLE \\
             -LEVEL LIBRARY \\
             < coverage.fifo &
         """
+
     """
+    # use the reference header to convert the BED into interval_list format
+    picard BedToIntervalList -I ${intervals} -O intervals.interval_list -SD ${dict}
 
     # each JVM reads the CRAM, decoded once, as uncompressed BAM from its own FIFO
     mkfifo multiple.fifo coverage.fifo
