@@ -26,17 +26,17 @@ dataset's Metamist project.
 An SG's dataset is its sample's Metamist project, with any `-test` removed. The cohort it came through
 doesn't matter: a cohort in `alpha` that holds an SG from `beta` sends that SG's CRAM to `beta`'s bucket.
 
-| param | meaning |
-|---|---|
-| `dataset` | the analysis dataset (no `-test` suffix): the run is launched under it, it pays for the run, and it holds the run records. Its service account must be able to see every SG's dataset and write to their buckets and Metamist projects |
-| `sequencing_type` | `genome` or `exome` |
-| `accessLevel` | `full` / `standard` (equivalent), or `test`. Applies to the whole run: every SG's Metamist project must be `<ds>` (full) or `<ds>-test` (test), and its bucket is `gs://cpg-<ds>-main` or `-test` |
-| `arGuid` | the analysis-runner GUID, used in resource labels, the per-run record directory and the registered analyses. Mandatory |
-| `cohorts` **or** `sgids` | exactly one: Metamist cohort IDs, or Metamist SG IDs (queried directly) |
-| `output_root` | null by default, so each dataset's outputs go to its bucket. If set (the `test` profile sets `results`), they go to `<output_root>/<ds>/` instead, with the same layout below that |
-| `ref_fasta` | the alignment reference. Its `.fai`, bwa-mem3 index and `.alt` (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac,alt}`) must sit beside it, and `ref_fasta_dict` is its alt-annotated `.dict`. Aligned alt-aware |
-| `aligned_ref_fasta` | the reference of an already-aligned CRAM whose analysis doesn't record one: the DRAGEN-masked FASTA the CRAMs made before nf-align used. `BUILD_SAMPLESHEET` writes it into such a CRAM's row. Its `.fai` must sit beside it, and, for QC-only SGs, its `<name>.dict` |
-| `align_container`, `cpg_container`, `somalier_container` | the images, with defaults in `nextflow.config`. The run fails at launch if any is unset, in every profile |
+| param                                                    | meaning                                                                                                                                                                                                                                                               |
+|----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `dataset`                                                | the analysis dataset (no `-test` suffix): the run is launched under it, it pays for the run, and it holds the run records. Its service account must be able to see every SG's dataset and write to their buckets and Metamist projects                                |
+| `sequencing_type`                                        | `genome` or `exome`                                                                                                                                                                                                                                                   |
+| `accessLevel`                                            | `full` / `standard` (equivalent), or `test`. Applies to the whole run: every SG's Metamist project must be `<ds>` (full) or `<ds>-test` (test), and its bucket is `gs://cpg-<ds>-main` or `-test`                                                                     |
+| `arGuid`                                                 | the analysis-runner GUID, used in resource labels, the per-run record directory and the registered analyses. Mandatory                                                                                                                                                |
+| `cohorts` **or** `sgids`                                 | exactly one: Metamist cohort IDs, or Metamist SG IDs (queried directly)                                                                                                                                                                                               |
+| `output_root`                                            | null by default, so each dataset's outputs go to its bucket. If set (the `test` profile sets `results`), they go to `<output_root>/<ds>/` instead, with the same layout below that                                                                                    |
+| `ref_fasta`                                              | the alignment reference. Its `.fai`, bwa-mem3 index and `.alt` (`<ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac,alt}`) must sit beside it, and `ref_fasta_dict` is its alt-annotated `.dict`. Aligned alt-aware                                                             |
+| `aligned_ref_fasta`                                      | the reference of an already-aligned CRAM whose analysis doesn't record one: the DRAGEN-masked FASTA the CRAMs made before nf-align used. `BUILD_SAMPLESHEET` writes it into such a CRAM's row. Its `.fai` must sit beside it, and, for QC-only SGs, its `<name>.dict` |
+| `align_container`, `cpg_container`, `somalier_container` | the images, with defaults in `nextflow.config`. The run fails at launch if any is unset, in every profile                                                                                                                                                             |
 
 The defaults are in `nextflow.config`, which `conf/base.config` reads. `main.nf`'s `params {}` block declares
 each one's type, so Nextflow converts command-line values (`--cram_qc false` is a Boolean, not the string
@@ -45,16 +45,16 @@ each one's type, so Nextflow converts command-line values (`--cram_qc false` is 
 
 Switches and tuning, all with defaults in `nextflow.config`:
 
-| param                                                                                                                                                                     | default        | meaning                                                                                                                                         |
-|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------|-------------------------------------------------------------------------------------------------------------------------------------------------|
-| `register`                                                                                                                                                                | `true`         | `false` skips all Metamist registration (the `test` profile sets it)                                                                            |
-| `cram_qc`                                                                                                                                                                 | `true`         | `false` skips CRAM QC and the `cram_qc` analysis. The duplicate metrics are still published                                                     |
-| `qc_aligned`                                                                                                                                                              | `false`        | also QC already-aligned SGs whose CRAM has no `cram_qc` analysis. Needs `cram_qc` |
-| `register_wait_minutes`                                                                                                                                                   | 30             | how long registration polls for the published files                                                                                             |
-| `realignment_shards`                                                                                                                                                      | 0              | bazam shards per CRAM/BAM input; 0 means 6 for genomes and 1 for exomes                                                                         |
-| `dupblaster_extra_args`                                                                                                                                                   | `''`           | appended verbatim to the dupblaster command (see Running)                                                                                       |
-| `somalier_sites`                                                                                                                                                          | hg38 sites VCF | where somalier fingerprints each CRAM                                                                                                           |
-| `verifybamid_container`, `picard_container`, `mosdepth_container`, `{genome,exome}_contam_{ud,bed,mu}`, `genome_coverage_interval_list`, `exome_evaluation_interval_list` | cpg-flow's     | CRAM QC's images and references. With `cram_qc` on, the run fails at launch if the images or the sequencing type's references are unset         |
+| param                                                                                                                                                         | default        | meaning                                                                                                                                 |
+|---------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------|-----------------------------------------------------------------------------------------------------------------------------------------|
+| `register`                                                                                                                                                    | `true`         | `false` skips all Metamist registration (the `test` profile sets it)                                                                    |
+| `cram_qc`                                                                                                                                                     | `true`         | `false` skips CRAM QC and the `cram_qc` analysis. The duplicate metrics are still published                                             |
+| `qc_aligned`                                                                                                                                                  | `false`        | also QC already-aligned SGs whose CRAM has no `cram_qc` analysis. Needs `cram_qc`                                                       |
+| `register_wait_minutes`                                                                                                                                       | 30             | how long registration polls for the published files                                                                                     |
+| `realignment_shards`                                                                                                                                          | 0              | bazam shards per CRAM/BAM input; 0 means 6 for genomes and 1 for exomes                                                                 |
+| `dupblaster_extra_args`                                                                                                                                       | `''`           | appended verbatim to the dupblaster command (see Running)                                                                               |
+| `somalier_sites`                                                                                                                                              | hg38 sites VCF | where somalier fingerprints each CRAM                                                                                                   |
+| `verifybamid_container`, `picard_container`, `mosdepth_container`, `{genome,exome}_contam_{ud,bed,mu}`, `genome_coverage_regions`, `exome_evaluation_regions` | cpg-flow's     | CRAM QC's images and references. With `cram_qc` on, the run fails at launch if the images or the sequencing type's references are unset |
 
 There is no `outputDir`: every destination is worked out per SG (see Outputs). The launcher supplies
 `-work-dir` and `google.project`; the config never sets them.
@@ -150,11 +150,11 @@ the run.
 
 ### 3. ALIGN subworkflow
 
-| input | path |
-|---|---|
-| CRAM/BAM without an index | `SORT_INDEX`, then sharded like an indexed input |
-| CRAM/BAM | `realignment_shards` bazam shards, defaulting to 6 for genomes and 1 for exomes |
-| FASTQ / FASTQ.ora | one unit per lane; ORA files are streamed through `orad` into bwa-mem3 via FIFOs |
+| input                     | path                                                                             |
+|---------------------------|----------------------------------------------------------------------------------|
+| CRAM/BAM without an index | `SORT_INDEX`, then sharded like an indexed input                                 |
+| CRAM/BAM                  | `realignment_shards` bazam shards, defaulting to 6 for genomes and 1 for exomes  |
+| FASTQ / FASTQ.ora         | one unit per lane; ORA files are streamed through `orad` into bwa-mem3 via FIFOs |
 
 - **One unit** goes to `ALIGN_TO_CRAM`: `align_stream.sh | dedup_to_cram.sh` in a single task.
 - **Several units** go to `ALIGN_SHARD` (aligned, then name-sorted to BAM). They are then grouped per SG
@@ -202,12 +202,12 @@ every QC file to `qcDir`. `outputs(meta)` in `main.nf` lists every file the SG p
 analysis that registers it, and the pre-flight check and both registrations read that, so publishing and
 registration can't drift apart. `main.nf` stays the one place the layout is defined:
 
-| target | path under the SG's output root (`exome/` prefix for exomes) |
-|---|---|
-| CRAM + index | `[exome/]cram/<sg>.cram`, plus `.crai` |
-| somalier fingerprint | `[exome/]cram/<sg>.cram.somalier` (cpg-flow's `CramPath.somalier_path`) |
-| duplicate metrics | `[exome/]cram_qc/<sg>/<sg>.markduplicates-metrics`, even with `--cram_qc false` |
-| CRAM QC | `[exome/]cram_qc/<sg>/`: `<sg>.verify-bamid.selfSM`, `<sg>.samtools-stats`, `<sg>.{alignment_summary,base_distribution_by_cycle,insert_size,quality_by_cycle,quality_yield}_metrics`, `<sg>.picard-{wgs,hs}-metrics`, `<sg>.mosdepth.{global.dist,region.dist,summary}.txt`, `<sg>.{regions,quantized}.bed.gz`, and their `.csi`, which are published but not registered |
+| target               | path under the SG's output root (`exome/` prefix for exomes)                                                                                                                                                                                                                                                                                                             |
+|----------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| CRAM + index         | `[exome/]cram/<sg>.cram`, plus `.crai`                                                                                                                                                                                                                                                                                                                                   |
+| somalier fingerprint | `[exome/]cram/<sg>.cram.somalier` (cpg-flow's `CramPath.somalier_path`)                                                                                                                                                                                                                                                                                                  |
+| duplicate metrics    | `[exome/]cram_qc/<sg>/<sg>.markduplicates-metrics`, even with `--cram_qc false`                                                                                                                                                                                                                                                                                          |
+| CRAM QC              | `[exome/]cram_qc/<sg>/`: `<sg>.verify-bamid.selfSM`, `<sg>.samtools-stats`, `<sg>.{alignment_summary,base_distribution_by_cycle,insert_size,quality_by_cycle,quality_yield}_metrics`, `<sg>.picard-{wgs,hs}-metrics`, `<sg>.mosdepth.{global.dist,region.dist,summary}.txt`, `<sg>.{regions,quantized}.bed.gz`, and their `.csi`, which are published but not registered |
 
 The run records are the sample sheet, `samplesheet.tsv`, published by `BUILD_SAMPLESHEET` to
 `alignment_samplesheets/<arGuid>/` under the analysis dataset's output root. There is no index of the CRAMs a
@@ -248,12 +248,12 @@ written against (`ref_fasta` and `ref_fasta_dict` for a new CRAM):
   (`<type>_contam_{ud,bed,mu}`), capped at depth 1000 for exomes.
 - `SAMTOOLS_STATS`: `samtools stats`, in the align image.
 - `PICARD_METRICS`: CollectMultipleMetrics, run alongside CollectWgsMetrics over
-  `genome_coverage_interval_list` (genome), or CollectHsMetrics with `exome_evaluation_interval_list` as
-  both bait and target (exome). Both lists' headers are `ref_fasta`'s (unmasked). CollectWgsMetrics never
-  checks the interval list's header, so the genome list is used as it is. CollectHsMetrics fails unless the
-  lists' headers match the CRAM's, md5s included, so the exome list is passed through BED and back with the
-  CRAM's own `.dict`. That matters only for a QC-only SG whose CRAM predates nf-align: the DRAGEN-masked
-  reference has the same contigs and lengths as `ref_fasta`, but different md5s on its alt contigs.
+  `genome_coverage_regions` (genome), or CollectHsMetrics with `exome_evaluation_regions` as both bait and
+  target (exome). The regions are stored as BED, with no reference header, and `BedToIntervalList` turns them
+  into an interval list headed with the CRAM's own `.dict`, for both sequencing types. CollectHsMetrics fails
+  unless the lists' headers match the CRAM's, md5s included, and the DRAGEN-masked reference of a QC-only
+  SG's CRAM that predates nf-align has the same contigs and lengths as `ref_fasta`, but different md5s on its
+  alt contigs.
 - `MOSDEPTH`: `mosdepth --no-per-base --fast-mode --by 100 --quantize 0:1:5:20:50:`, for both sequencing
   types: the depth distribution, mean depth in 100 bp windows, and the genome split into depth bands. Its
   own task, as mosdepth reads the CRAM through its index and can't share Picard's decoded stream.
@@ -359,18 +359,18 @@ These follow from the decisions above, and are accepted for now:
 
 ## Resources (`conf/base.config`)
 
-| process | CPUs | memory | disk (genome / exome) | machine type, by attempt |
-|---|---|---|---|---|
-| `ALIGN_TO_CRAM`, `ALIGN_SHARD` | 16 | 48 GB × attempt | 400 / 100 GB | `n2-standard-16`, `n2-highmem-16`, `n2-highmem-32` |
-| `MERGE_TO_CRAM` | 8 | 24 GB × attempt | 400 / 100 GB | `n2-standard-8`, `n2-highmem-8`, `n2-highmem-16` |
-| `SORT_INDEX` | 8 | 32 GB × attempt | 550 / 250 GB | `n2-highmem-8`, `n2-highmem-16`, `n2-highmem-16` |
-| `SOMALIER_EXTRACT` | 1 | 4 GB × attempt | 100 / 20 GB | `e2-standard-2`, `e2-standard-4`, `e2-standard-8` |
-| `VERIFYBAMID` | 4 | 12 GB × attempt | 100 / 20 GB | `n2-standard-4`, `n2-highmem-4`, `n2-highmem-8` |
-| `SAMTOOLS_STATS` | 4 | 4 GB × attempt | 100 / 20 GB | `e2-standard-4`, `e2-standard-4`, `e2-standard-8` |
-| `PICARD_METRICS` (two JVMs, 40% heap each) | 4 | 12 GB × attempt | 100 / 20 GB | `n2-standard-4`, `n2-highmem-4`, `n2-highmem-8` |
-| `MOSDEPTH` (3 decompression threads) | 4 | 4 GB × attempt | 100 / 20 GB | `e2-standard-4`, `e2-standard-4`, `e2-standard-8` |
-| `BUILD_SAMPLESHEET`, `REGISTER_CRAM`, `REGISTER_CRAM_QC` | 1 | 4 / 2 GB | default | `e2-standard-2` |
-| `PREFLIGHT` | native `exec:`, in the Nextflow process | | | |
+| process                                                  | CPUs                                    | memory          | disk (genome / exome)  | machine type, by attempt                           |
+|----------------------------------------------------------|-----------------------------------------|-----------------|------------------------|----------------------------------------------------|
+| `ALIGN_TO_CRAM`, `ALIGN_SHARD`                           | 16                                      | 48 GB × attempt | 400 / 100 GB           | `n2-standard-16`, `n2-highmem-16`, `n2-highmem-32` |
+| `MERGE_TO_CRAM`                                          | 8                                       | 24 GB × attempt | 400 / 100 GB           | `n2-standard-8`, `n2-highmem-8`, `n2-highmem-16`   |
+| `SORT_INDEX`                                             | 8                                       | 32 GB × attempt | 550 / 250 GB           | `n2-highmem-8`, `n2-highmem-16`, `n2-highmem-16`   |
+| `SOMALIER_EXTRACT`                                       | 1                                       | 4 GB × attempt  | 100 / 20 GB            | `e2-standard-2`, `e2-standard-4`, `e2-standard-8`  |
+| `VERIFYBAMID`                                            | 4                                       | 12 GB × attempt | 100 / 20 GB            | `n2-standard-4`, `n2-highmem-4`, `n2-highmem-8`    |
+| `SAMTOOLS_STATS`                                         | 4                                       | 4 GB × attempt  | 100 / 20 GB            | `e2-standard-4`, `e2-standard-4`, `e2-standard-8`  |
+| `PICARD_METRICS` (two JVMs, 40% heap each)               | 4                                       | 12 GB × attempt | 100 / 20 GB            | `n2-standard-4`, `n2-highmem-4`, `n2-highmem-8`    |
+| `MOSDEPTH` (3 decompression threads)                     | 4                                       | 4 GB × attempt  | 100 / 20 GB            | `e2-standard-4`, `e2-standard-4`, `e2-standard-8`  |
+| `BUILD_SAMPLESHEET`, `REGISTER_CRAM`, `REGISTER_CRAM_QC` | 1                                       | 4 / 2 GB        | default                | `e2-standard-2`                                    |
+| `PREFLIGHT`                                              | native `exec:`, in the Nextflow process |                 |                        |                                                    |
 
 **Every process names one exact `machineType`**, chosen by `task.attempt`, so an OOM retry lands on a
 bigger VM. Don't replace these with a list of types or a wildcard (`n2-*`). With

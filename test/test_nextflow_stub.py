@@ -96,7 +96,7 @@ def run(tmp_path, cohort_sgs):
     touch(refs / 'sites.vcf.gz')
     # CRAM QC's references, for both sequencing types
     qc_refs = [f'{seq}_contam_{ext}' for seq in ['genome', 'exome'] for ext in ['ud', 'bed', 'mu']]
-    qc_refs += ['genome_coverage_interval_list', 'exome_evaluation_interval_list']
+    qc_refs += ['genome_coverage_regions', 'exome_evaluation_regions']
     for name in qc_refs:
         touch(refs / name)
 
@@ -224,7 +224,7 @@ def test_cram_qc_reads_the_alignment_reference_and_the_sequencing_types_resource
     verify = task_dir(tasks, tmp_path, 'CRAM_QC:VERIFYBAMID (CPG3)')
     assert {'exome_contam_ud', 'exome_contam_bed', 'exome_contam_mu'} <= {p.name for p in verify.iterdir()}
     picard = task_dir(tasks, tmp_path, 'CRAM_QC:PICARD_METRICS (CPG3)') / 'intervals'
-    assert [p.name for p in picard.iterdir()] == ['exome_evaluation_interval_list']
+    assert [p.name for p in picard.iterdir()] == ['exome_evaluation_regions']
 
 
 def test_cram_qc_can_be_turned_off(run):

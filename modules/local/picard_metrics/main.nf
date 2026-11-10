@@ -31,21 +31,12 @@ process PICARD_METRICS {
     // decode threads, on top of samtools' own. The JVMs take a core each, but a decode thread with nowhere to
     // write blocks on the pipe, so these only run when picard keeps up
     def threads = Math.max(1, task.cpus - 1)
-    // The interval lists' headers carry the md5s of the unmasked reference (ref_fasta's .dict). The masked
-    // reference of CRAMs made before nf-align has the same contigs and lengths, but different md5s on its
-    // alt contigs.
-    // genome: CollectWgsMetrics checks the CRAM's header against the reference only, never the interval
-    // list's, so the list is used as it is, for any CRAM.
-    // exome: CollectHsMetrics fails unless the target and bait lists' headers match the CRAM's, md5s included.
-    // A round trip through BED drops the header and re-adds it from this CRAM's own .dict, so a QC-only SG's
-    // CRAM is checked against the right reference. For a new CRAM, it changes nothing.
+    // Interval lists' headers carry md5s of the reference they were generated with (ref_fasta's .dict).
+    // We store intervals in BED format to prevent attachment to any specific reference genome, and reheader
+    // within the process to be Picard compatible.
+
+    // the coverage checking command, chosen depending on whether the file is exome or genome
     // A stream has no index, so picard reads every record and skips those outside the regions itself
-    def reheader = sequencing_type == 'genome'
-        ? ''
-        : """
-        picard IntervalListToBed -I ${intervals} -O intervals.bed
-        picard BedToIntervalList -I intervals.bed -O intervals.interval_list -SD ${dict}
-        """
     def coverage = sequencing_type == 'genome'
         ? """
         picard ${heap} CollectWgsMetrics \\
@@ -53,7 +44,7 @@ process PICARD_METRICS {
             -R ${fasta} \\
             -O ${meta.id}.picard-wgs-metrics \\
             --VALIDATION_STRINGENCY SILENT \\
-            --INTERVALS ${intervals} \\
+            --INTERVALS intervals.interval_list \\
             --USE_FAST_ALGORITHM true \\
             --READ_LENGTH 250 \\
             < coverage.fifo &
@@ -71,8 +62,10 @@ process PICARD_METRICS {
             -LEVEL LIBRARY \\
             < coverage.fifo &
         """
+
     """
-    ${reheader.trim()}
+    # use the reference header to convert the BED into interval_list format
+    picard BedToIntervalList -I ${intervals} -O intervals.interval_list -SD ${dict}
 
     # each JVM reads the CRAM, decoded once, as uncompressed BAM from its own FIFO
     mkfifo multiple.fifo coverage.fifo
