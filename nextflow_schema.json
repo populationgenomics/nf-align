@@ -1,0 +1,183 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://raw.githubusercontent.com/populationgenomics/nf-align/main/nextflow_schema.json",
+    "title": "nf-align parameters",
+    "description": "FASTQ / BAM / CRAM -> deduplicated CRAM with bwa-mem3 and dupblaster, driven by Metamist cohorts or sequencing groups. main.nf validates these itself; this schema drives launch forms.",
+    "type": "object",
+    "$defs": {
+        "run": {
+            "title": "What to align",
+            "type": "object",
+            "required": ["dataset", "sequencing_type", "arGuid"],
+            "properties": {
+                "dataset": {
+                    "type": "string",
+                    "description": "The analysis dataset (no -test suffix): the run is launched under it and pays for it, and its bucket holds the run records. Each SG is published to and registered in its own dataset, which can differ."
+                },
+                "sequencing_type": {
+                    "type": "string",
+                    "enum": ["genome", "exome"],
+                    "description": "One sequencing type per run. Exome outputs are written under exome/."
+                },
+                "accessLevel": {
+                    "type": "string",
+                    "enum": ["full", "standard", "test"],
+                    "default": "standard",
+                    "description": "Applies to the whole run. full and standard are equivalent: every SG must be in a production project, and is published to gs://cpg-<ds>-main. test: every SG must be in a <ds>-test project, and is registered there and published to gs://cpg-<ds>-test."
+                },
+                "arGuid": {
+                    "type": "string",
+                    "description": "analysis-runner GUID: labels compute, names the per-run record directory, and is recorded on each analysis."
+                },
+                "cohorts": {
+                    "type": "string",
+                    "description": "Comma-separated Metamist cohort IDs to build the sample sheet from. Exactly one of cohorts or sgids."
+                },
+                "sgids": {
+                    "type": "string",
+                    "description": "Comma-separated Metamist sequencing group IDs, queried directly instead of through cohorts. Each must be a short-read SG of sequencing_type, and can be in any project at the run's access level. Exactly one of cohorts or sgids."
+                },
+                "output_root": {
+                    "type": "string",
+                    "description": "For local and test runs: publish each dataset's outputs under <output_root>/<dataset>/ instead of its bucket."
+                }
+            }
+        },
+        "alignment": {
+            "title": "Alignment",
+            "type": "object",
+            "required": ["ref_fasta"],
+            "properties": {
+                "ref_fasta": {
+                    "type": "string",
+                    "description": "Reference FASTA that reads are aligned to and CRAMs are encoded against, with <ref_fasta>.{fai,bwt.2bit.64,amb,ann,pac,alt} alongside it (the bwa-mem3 index, built with the FASTA as prefix, and the .alt file that makes the alignment alt-aware)."
+                },
+                "ref_fasta_dict": {
+                    "type": "string",
+                    "description": "Alt-annotated sequence dictionary of ref_fasta (samtools dict --alt). bwa-mem3 copies its @SQ lines, with their AH tags, into every CRAM header."
+                },
+                "realignment_shards": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "bazam shards per CRAM/BAM input. 0 means 6 for genomes, 1 for exomes."
+                },
+                "dupblaster_extra_args": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Extra dupblaster arguments, appended verbatim to its command line, so quote them as for bash."
+                },
+                "aligned_ref_fasta": {
+                    "type": "string",
+                    "description": "Reference an already-aligned CRAM is decoded with when its analysis doesn't record one: by default the DRAGEN-masked FASTA the CRAMs made before nf-align used. The sample sheet builder writes it into such a CRAM's row. Needs <aligned_ref_fasta>.fai alongside."
+                },
+                "somalier_sites": {
+                    "type": "string",
+                    "description": "Sites VCF that somalier extract fingerprints each newly aligned CRAM at."
+                }
+            }
+        },
+        "registration": {
+            "title": "Metamist registration",
+            "type": "object",
+            "properties": {
+                "register": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Register each published CRAM as one Metamist 'cram' analysis, with its index and somalier fingerprint as secondary files, and, after it, its CRAM QC as one 'cram_qc' analysis."
+                },
+                "register_wait_minutes": {
+                    "type": "integer",
+                    "default": 30,
+                    "minimum": 1,
+                    "description": "How long registration waits for an analysis's files to be published."
+                }
+            }
+        },
+        "containers": {
+            "title": "Containers",
+            "type": "object",
+            "properties": {
+                "align_container": {
+                    "type": "string",
+                    "description": "Image with bazam, bwa-mem3, dupblaster, samtools and orad. samtools stats runs in it too."
+                },
+                "cpg_container": {
+                    "type": "string",
+                    "description": "Image with metamist and cpg_utils, for the sample sheet and registration."
+                },
+                "somalier_container": {
+                    "type": "string",
+                    "description": "Image with somalier, for CRAM fingerprints."
+                },
+                "verifybamid_container": {
+                    "type": "string",
+                    "description": "Image with VerifyBamID2, for CRAM QC."
+                },
+                "picard_container": {
+                    "type": "string",
+                    "description": "Image with picard, for CRAM QC."
+                },
+                "mosdepth_container": {
+                    "type": "string",
+                    "description": "Image with mosdepth, for CRAM QC."
+                }
+            }
+        },
+        "cram_qc": {
+            "title": "CRAM QC",
+            "type": "object",
+            "properties": {
+                "cram_qc": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Run VerifyBamID, samtools stats, Picard metrics and mosdepth on each newly aligned CRAM, publish them with the duplicate metrics to [exome/]cram_qc/<sg>/, and register them as one Metamist 'cram_qc' analysis. The duplicate metrics are published either way."
+                },
+                "qc_aligned": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Also QC each already-aligned SG whose current CRAM has no 'cram_qc' analysis, without realigning it: its QC tools' outputs are published to [exome/]cram_qc/<sg>/ and registered as a 'cram_qc' analysis of the registered CRAM, with its duplicate metrics if its aligning run left them in the SG's dataset. Needs cram_qc."
+                },
+                "genome_contam_ud": {
+                    "type": "string",
+                    "description": "VerifyBamID's UD contamination resource for genomes."
+                },
+                "genome_contam_bed": {
+                    "type": "string",
+                    "description": "VerifyBamID's BED contamination resource for genomes."
+                },
+                "genome_contam_mu": {
+                    "type": "string",
+                    "description": "VerifyBamID's MU contamination resource for genomes."
+                },
+                "exome_contam_ud": {
+                    "type": "string",
+                    "description": "VerifyBamID's UD contamination resource for exomes."
+                },
+                "exome_contam_bed": {
+                    "type": "string",
+                    "description": "VerifyBamID's BED contamination resource for exomes."
+                },
+                "exome_contam_mu": {
+                    "type": "string",
+                    "description": "VerifyBamID's MU contamination resource for exomes."
+                },
+                "genome_coverage_regions": {
+                    "type": "string",
+                    "description": "BED of the regions CollectWgsMetrics measures coverage over. Converted to an interval list headed with each CRAM's own .dict."
+                },
+                "exome_evaluation_regions": {
+                    "type": "string",
+                    "description": "BED of the bait and target regions for CollectHsMetrics. Converted to an interval list headed with each CRAM's own .dict."
+                }
+            }
+        }
+    },
+    "allOf": [
+        { "$ref": "#/$defs/run" },
+        { "$ref": "#/$defs/alignment" },
+        { "$ref": "#/$defs/registration" },
+        { "$ref": "#/$defs/cram_qc" },
+        { "$ref": "#/$defs/containers" }
+    ]
+}

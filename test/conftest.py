@@ -1,0 +1,102 @@
+"""Metamist-shaped fixtures shared by the sample sheet and stub-run tests. Metamist is never contacted."""
+
+from pathlib import Path
+
+import pytest
+
+PROJECT = 'ds'
+OTHER = 'other'  # a second dataset, so runs span two
+
+
+def touch(path: Path) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    return str(path)
+
+
+def sg(
+    sg_id: str,
+    assays: list[dict] | None = None,
+    analyses: list[dict] | None = None,
+    project: str = PROJECT,
+    **fields: object,
+) -> dict:
+    """A sequencing group, shaped like the SgFields fragment of the sample sheet queries."""
+    return {
+        'id': sg_id,
+        'type': 'genome',
+        'technology': 'short-read',
+        'sample': {'project': {'name': project}},
+        'assays': [{'meta': meta} for meta in assays or []],
+        'analyses': analyses or [],
+    } | fields
+
+
+def cohort(cohort_id: str, sgs: list[dict], status: str = 'active') -> dict:
+    return {'id': cohort_id, 'status': status, 'sequencingGroups': sgs}
+
+
+def fastq_meta(r1: str, r2: str, **extra: object) -> dict:
+    return {'reads_type': 'fastq', 'reads': [{'location': r1}, {'location': r2}]} | extra
+
+
+def cram_analysis(analysis_id: int, output: str | None, somalier: str | None = None, **meta: str) -> dict:
+    """A CRAM analysis as nf-align registers it: the index, and the fingerprint if given, as secondary files."""
+    outputs = None
+    if output:
+        secondary = {'index': {'path': f'{output}.crai'}} | ({'somalier': {'path': somalier}} if somalier else {})
+        outputs = {'path': output, 'secondary_files': secondary}
+    return {'id': analysis_id, 'type': 'cram', 'outputs': outputs, 'meta': meta}
+
+
+def cram_qc_analysis(analysis_id: int, cram: str) -> dict:
+    """A CRAM QC analysis as nf-align registers it: the CRAM is its primary file."""
+    return {'id': analysis_id, 'type': 'cram_qc', 'outputs': {'path': cram}, 'meta': {}}
+
+
+@pytest.fixture
+def cohort_sgs(tmp_path: Path) -> list[dict]:
+    """
+    One SG per input kind, as local placeholder files so a stub run can stage them. CPG1-CPG3 and CPG7 are in
+    PROJECT, CPG4-CPG6 in OTHER. CPG5 and CPG7 are already aligned; only CPG5's CRAM analysis has a somalier
+    fingerprint, and only CPG5's CRAM has CRAM QC.
+    """
+    data = tmp_path / 'data'
+    cram = touch(data / 'existing' / 'CPG5.cram')
+    touch(data / 'existing' / 'CPG5.cram.crai')
+    somalier = touch(data / 'existing' / 'CPG5.cram.somalier')
+    unfingerprinted = touch(data / 'existing' / 'CPG7.cram')
+    touch(data / 'existing' / 'CPG7.cram.crai')
+    touch(data / 'old_ref.fasta.fai')
+    return [
+        sg('CPG1', [fastq_meta(touch(data / f'L{n}_R1.fq.gz'), touch(data / f'L{n}_R2.fq.gz')) for n in (1, 2)]),
+        sg(
+            'CPG2',
+            [
+                fastq_meta(
+                    touch(data / 'R1.fq.ora'),
+                    touch(data / 'R2.fq.ora'),
+                    reads_type='fastq_ora',
+                    ora_reference={'location': touch(data / 'ora.tar')},
+                ),
+            ],
+        ),
+        sg(
+            'CPG3',
+            [
+                {
+                    'reads_type': 'cram',
+                    'reads': {
+                        'location': touch(data / 'CPG3.cram'),
+                        'secondaryFiles': [{'location': touch(data / 'CPG3.cram.crai')}],
+                    },
+                    'reference_assembly': {'location': touch(data / 'old_ref.fasta')},
+                },
+            ],
+        ),
+        sg('CPG4', [{'reads_type': 'bam', 'reads': {'location': touch(data / 'CPG4.bam')}}], project=OTHER),
+        sg('CPG5', analyses=[cram_analysis(1, cram, somalier=somalier), cram_qc_analysis(2, cram)], project=OTHER),
+        sg('CPG6', [fastq_meta(touch(data / 'S6_R1.fq.gz'), touch(data / 'S6_R2.fq.gz'))], project=OTHER),
+        # an older CRAM, whose analysis records neither its reference nor a fingerprint, and that has no CRAM QC
+        sg('CPG7', analyses=[cram_analysis(3, unfingerprinted)]),
+    ]
