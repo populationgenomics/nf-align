@@ -69,8 +69,8 @@ _Avoid_: run ID
 
 **Sample sheet**:
 The run's work list, built from Metamist or supplied directly. Each pipeline defines what one row is: in
-alignment, an alignment unit and the dataset its SG belongs to; in combining, one SG with its gVCF and the
-dataset the SG belongs to.
+alignment, an alignment unit and the dataset its SG belongs to; in genotyping, one SG with its CRAM and
+the dataset the SG belongs to; in combining, one SG with its gVCF and the dataset the SG belongs to.
 _Avoid_: manifest, input sheet
 
 **Kind**:
@@ -83,8 +83,10 @@ genotyping) but never realigned, refingerprinted, republished or re-registered, 
 analysis has a somalier fingerprint (ADR 0012). With `--qc_aligned`, one without CRAM QC is a QC-only SG.
 
 **QC-only SG**:
-An already-aligned SG whose CRAM has no `cram_qc` analysis, in a run with `--qc_aligned true`. It gets CRAM QC
-and nothing else, against its CRAM's own reference (ADR 0015).
+An SG that gets QC and nothing else. In alignment, it's an already-aligned SG whose CRAM has no `cram_qc`
+analysis, in a run with `--qc_aligned true`, and it gets CRAM QC against its CRAM's own reference (ADR 0015). In
+genotyping, it's a genotyped SG whose gVCF has no `gvcf_qc` analysis, in a run with `--qc_genotyped true`, and it
+gets gVCF QC against its gVCF's own reference.
 _Avoid_: QC gapfill SG, re-QC
 
 **Unregistered CRAM**:
@@ -158,8 +160,8 @@ A path that this run would publish, but which already exists. It stops the run b
 are never clashes (ADR 0016).
 
 **Run records**:
-The per-run directory `alignment_samplesheets/<ar-guid>/` in the analysis dataset bucket, holding the
-sample sheet. Neither the CRAMs the run produced (ADR 0019) nor its failed SGs (ADR 0017) are recorded there.
+The per-run directory in the analysis dataset bucket that holds the sample sheet:
+`alignment_samplesheets/<ar-guid>/` for alignment, `genotyping_samplesheets/<ar-guid>/` for genotyping. Neither the CRAMs the run produced (ADR 0019) nor its failed SGs (ADR 0017) are recorded there.
 
 **Failed SG**:
 An SG that didn't get through every step of a run: alignment, fingerprinting, registration, CRAM QC or its
@@ -178,3 +180,35 @@ _Avoid_: align QC, alignment QC, `qc` analysis (a different, dataset-level type)
 **CRAM companion**:
 A file that belongs to the CRAM itself and is registered on its `cram` analysis: the index and the somalier
 fingerprint. QC metrics are not companions.
+
+### Genotyping
+
+**Genotyping**:
+Turning one SG's CRAM into its gVCF. It always follows the CRAM's alignment and CRAM QC. There is no
+multi-sample genotyping step: combining gVCFs into a VDS is a separate process.
+_Avoid_: variant calling, calling (as the name of the step)
+
+**gVCF**:
+One SG's variant calls, with the stretches between them summarised as blocks of reference confidence, made
+from one CRAM. An SG has at most one active gVCF analysis at a time.
+_Avoid_: VCF (a gVCF is not a plain VCF), g.vcf
+
+**Source CRAM**:
+The CRAM a gVCF was genotyped from. The gVCF is genotyped against the source CRAM's own reference, and both
+are recorded on the gVCF's analysis.
+
+**Genotyped SG**:
+An SG that already has an active gVCF analysis. It's never genotyped again, whichever CRAM that gVCF came from.
+_Avoid_: called SG
+
+**Genotyping interval**:
+One of the sets of genomic regions that an SG's genotyping is split into, each genotyped separately and
+then merged back into one gVCF. Every SG in a run is split the same way.
+_Avoid_: shard (a read subset, in alignment), chunk, calling interval
+
+**gVCF QC**:
+Quality-control metrics computed from one gVCF, kept together in one folder per SG and recorded as one
+`gvcf_qc` analysis. Its primary file is the gVCF, and every metrics file is a secondary file. It's all or
+nothing, and it's only registered after the gVCF is (a back-filled one, from before genotyping wrote
+`bcftools stats`, lacks that file, so it's optional). Aggregating it across SGs is not part of genotyping.
+_Avoid_: variant calling QC, VCF QC
